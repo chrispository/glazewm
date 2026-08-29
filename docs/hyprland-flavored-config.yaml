@@ -1,0 +1,143 @@
+# Hyprland-flavored example config for GlazeWM (dwindle fork).
+#
+# Layout behavior is Hyprland-dwindle by default in this fork: new tiling
+# windows split the focused window's area (wide window -> side-by-side,
+# tall window -> stacked), just like Hyprland's dwindle layout.
+#
+# You can paste hyprland.conf directives directly into this YAML file.
+# Supported:
+#   bind / binde        -> keybindings
+#   exec-once           -> startup_commands
+#   exec-shutdown       -> shutdown_commands
+# Ignored (stripped with a log message):
+#   submap, windowrulev2, env, etc.
+
+# ─────────────────────────────────────────────────────────────────────
+# Regular GlazeWM settings
+# ─────────────────────────────────────────────────────────────────────
+
+gaps:
+  scale_with_dpi: true
+
+  inner_gap: '8px'
+
+  outer_gap:
+    top: '10px'
+    right: '10px'
+    bottom: '10px'
+    left: '10px'
+
+window_effects:
+  focused_window:
+    border:
+      enabled: true
+      color: '#82aaff'
+
+  other_windows:
+    border:
+      enabled: true
+      color: '#3d3d3d'
+
+workspaces:
+  - name: '1'
+  - name: '2'
+  - name: '3'
+  - name: '4'
+  - name: '5'
+  - name: '6'
+  - name: '7'
+  - name: '8'
+  - name: '9'
+
+# Optional GlazeWM binding modes still work alongside hyprland binds.
+binding_modes:
+  - name: 'resize'
+    keybindings:
+      - commands: ['resize --width -2%']
+        bindings: ['h', 'left']
+      - commands: ['resize --width +2%']
+        bindings: ['l', 'right']
+      - commands: ['resize --height +2%']
+        bindings: ['k', 'up']
+      - commands: ['resize --height -2%']
+        bindings: ['j', 'down']
+      - commands: ['wm-disable-binding-mode --name resize']
+        bindings: ['escape', 'enter']
+
+# ─────────────────────────────────────────────────────────────────────
+# Hyprland-style autostart
+# ─────────────────────────────────────────────────────────────────────
+
+exec-once = wezterm
+exec-once = zebar
+
+# ─────────────────────────────────────────────────────────────────────
+# Hyprland-style keybinds
+#
+# Syntax mirrors hyprland.conf: bind = MODS, KEY, DISPATCHER[, ARGS]
+# SUPER = Windows key. Supported modifiers: SUPER/WIN, SHIFT, CTRL, ALT
+# and their left/right variants, plus MOD1-5 aliases.
+# ─────────────────────────────────────────────────────────────────────
+
+# Close / exit.
+bind = SUPER, Q, killactive
+bind = SUPER SHIFT, E, exit
+bind = SUPER SHIFT, R, reload
+
+# Launch terminal.
+bind = SUPER, Return, exec, wezterm
+
+# Focus windows.
+bind = SUPER, H, movefocus, l
+bind = SUPER, L, movefocus, r
+bind = SUPER, K, movefocus, u
+bind = SUPER, J, movefocus, d
+
+# Swap/move windows.
+bind = SUPER SHIFT, H, movewindow, l
+bind = SUPER SHIFT, L, movewindow, r
+bind = SUPER SHIFT, K, movewindow, u
+bind = SUPER SHIFT, J, movewindow, d
+
+# Dwindle split control (Hyprland equivalent of togglesplit).
+bind = SUPER, V, togglesplit
+
+# Resize active window (pixel deltas).
+binde = SUPER ALT, H, resizeactive, -20 0
+binde = SUPER ALT, L, resizeactive, 20 0
+binde = SUPER ALT, K, resizeactive, 0 -20
+binde = SUPER ALT, J, resizeactive, 0 20
+
+# Enter resize mode defined above (arrow keys/HJKL + escape to exit).
+bind = SUPER ALT, R, wm-enable-binding-mode --name resize
+
+# Toggle floating / fullscreen.
+bind = SUPER, Space, togglefloating
+bind = SUPER, M, fullscreen
+bind = SUPER SHIFT, M, fullscreen, 1
+
+# Workspaces.
+bind = SUPER, 1, workspace, 1
+bind = SUPER, 2, workspace, 2
+bind = SUPER, 3, workspace, 3
+bind = SUPER, 4, workspace, 4
+bind = SUPER, 5, workspace, 5
+bind = SUPER, 6, workspace, 6
+bind = SUPER, 7, workspace, 7
+bind = SUPER, 8, workspace, 8
+bind = SUPER, 9, workspace, 9
+
+# Send focused window to a workspace (with shift, following focus).
+bind = SUPER SHIFT, 1, movetoworkspace, 1
+bind = SUPER SHIFT, 2, movetoworkspace, 2
+bind = SUPER SHIFT, 3, movetoworkspace, 3
+bind = SUPER SHIFT, 4, movetoworkspace, 4
+bind = SUPER SHIFT, 5, movetoworkspace, 5
+bind = SUPER SHIFT, 6, movetoworkspace, 6
+bind = SUPER SHIFT, 7, movetoworkspace, 7
+bind = SUPER SHIFT, 8, movetoworkspace, 8
+bind = SUPER SHIFT, 9, movetoworkspace, 9
+
+# Cycle through windows / monitors.
+bind = ALT, Tab, cyclenext
+bind = SUPER, F2, focusmonitor, 1

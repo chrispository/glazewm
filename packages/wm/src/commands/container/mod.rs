@@ -1,5 +1,6 @@
 mod attach_container;
 mod detach_container;
+mod dwindle_insertion;
 mod flatten_child_split_containers;
 mod flatten_split_container;
 mod focus_container_by_id;
@@ -13,6 +14,7 @@ mod wrap_in_split_container;
 
 pub use attach_container::*;
 pub use detach_container::*;
+pub use dwindle_insertion::*;
 pub use flatten_child_split_containers::*;
 pub use flatten_split_container::*;
 pub use focus_container_by_id::*;

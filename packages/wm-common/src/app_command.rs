@@ -305,7 +305,7 @@ pub struct InvokeAdjustBordersCommand {
   pub left: Option<LengthValue>,
 }
 
-#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[derive(Default, Args, Clone, Debug, PartialEq, Serialize)]
 #[group(required = true, multiple = false)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InvokeFocusCommand {
@@ -346,7 +346,7 @@ pub struct InvokeFocusCommand {
   pub recent_workspace: bool,
 }
 
-#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[derive(Default, Args, Clone, Debug, PartialEq, Serialize)]
 #[group(required = true, multiple = false)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InvokeMoveCommand {
@@ -384,7 +384,7 @@ pub struct InvokeMoveCommand {
   pub recent_workspace: bool,
 }
 
-#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[derive(Default, Args, Clone, Debug, PartialEq, Serialize)]
 #[group(required = true, multiple = true)]
 pub struct InvokeResizeCommand {
   #[clap(long, allow_hyphen_values = true)]

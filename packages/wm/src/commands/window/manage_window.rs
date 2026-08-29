@@ -5,7 +5,10 @@ use wm_platform::{NativeWindow, RectDelta};
 
 use crate::{
   commands::{
-    container::{attach_container, set_focused_descendant},
+    container::{
+      attach_container, dwindle_insert, dwindle_split_target,
+      set_focused_descendant,
+    },
     window::run_window_rules,
   },
   models::{
@@ -169,11 +172,27 @@ fn create_window(
   let window_state =
     window_state_to_create(&native_properties, &nearest_monitor, config)?;
 
+  // Dwindle-style insertion: new tiling windows split the focused
+  // window's area instead of being appended as flat siblings.
+  let dwindle_anchor = if matches!(window_state, WindowState::Tiling)
+    && target_parent.is_none()
+  {
+    dwindle_split_target(state)?
+  } else {
+    None
+  };
+
   // Attach the new window as the first child of the target parent (if
   // provided), otherwise, add as a sibling of the focused container.
-  let (target_parent, target_index) = match target_parent {
-    Some(parent) => (parent, 0),
-    None => insertion_target(&window_state, state)?,
+  let (target_parent, target_index) = match (&dwindle_anchor, target_parent)
+  {
+    (Some(anchor), _) => {
+      let anchor_workspace =
+        anchor.workspace().context("No workspace.")?;
+      (anchor_workspace.clone().into(), 0)
+    }
+    (None, Some(parent)) => (parent, 0),
+    (None, None) => insertion_target(state)?,
   };
 
   let target_workspace =
@@ -242,11 +261,15 @@ fn create_window(
     .into(),
   };
 
-  attach_container(
-    &window_container.clone().into(),
-    &target_parent,
-    Some(target_index),
-  )?;
+  if let Some(anchor) = &dwindle_anchor {
+    dwindle_insert(anchor, &window_container.clone().into())?;
+  } else {
+    attach_container(
+      &window_container.clone().into(),
+      &target_parent,
+      Some(target_index),
+    )?;
+  }
 
   // The OS might spawn the window on a different monitor to the target
   // parent, so adjustments might need to be made because of DPI.
@@ -308,19 +331,16 @@ fn window_state_to_create(
   Ok(WindowState::default_from_config(&config.value))
 }
 
-/// Gets where to insert a new window in the container tree.
+/// Gets where to insert a new window in the container tree when dwindle
+/// insertion doesn't apply.
 ///
 /// Rules:
 /// - For non-tiling windows: Always append to the workspace.
-/// - For tiling windows:
-///   1. Try to insert after the focused tiling window if one exists.
-///   2. If a non-tiling window is focused, try to insert after the first
-///      tiling window found.
-///   3. If no tiling windows exist, append to the workspace.
+/// - For tiling windows: Append to the workspace. This happens when
+///   there are no other tiling windows to split.
 ///
 /// Returns tuple of (parent container, insertion index).
 fn insertion_target(
-  window_state: &WindowState,
   state: &WmState,
 ) -> anyhow::Result<(Container, usize)> {
   let focused_container =
@@ -328,24 +348,6 @@ fn insertion_target(
 
   let focused_workspace =
     focused_container.workspace().context("No workspace.")?;
-
-  // For tiling windows, try to find a suitable tiling window to insert
-  // next to.
-  if *window_state == WindowState::Tiling {
-    let sibling = match focused_container {
-      Container::TilingWindow(_) => Some(focused_container),
-      _ => focused_workspace
-        .descendant_focus_order()
-        .find(Container::is_tiling_window),
-    };
-
-    if let Some(sibling) = sibling {
-      return Ok((
-        sibling.parent().context("No parent.")?,
-        sibling.index() + 1,
-      ));
-    }
-  }
 
   // Default to appending to workspace.
   Ok((

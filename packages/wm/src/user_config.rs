@@ -2,8 +2,9 @@ use std::{collections::HashMap, env, fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 use wm_common::{
-  InvokeCommand, KeybindingConfig, MatchType, ParsedConfig,
-  WindowMatchConfig, WindowRuleConfig, WindowRuleEvent, WorkspaceConfig,
+  extract_hyprland_directives, InvokeCommand, KeybindingConfig, MatchType,
+  ParsedConfig, WindowMatchConfig, WindowRuleConfig, WindowRuleEvent,
+  WorkspaceConfig,
 };
 
 use crate::{
@@ -60,6 +61,10 @@ impl UserConfig {
   /// Reads and validates the user config from the given path.
   ///
   /// Creates a new config file from sample if it doesn't exist.
+  ///
+  /// Hyprland-style directives (e.g. `bind = SUPER, Q, killactive`) are
+  /// extracted from the config file prior to YAML parsing and merged
+  /// into the parsed config value.
   fn read(
     config_path: &PathBuf,
   ) -> anyhow::Result<(ParsedConfig, String)> {
@@ -70,9 +75,25 @@ impl UserConfig {
     let config_str = fs::read_to_string(config_path)
       .context("Unable to read config file.")?;
 
+    // Strip Hyprland-style directives (e.g. `bind = SUPER, Q,
+    // killactive`) and translate them into their GlazeWM equivalents
+    // before parsing the remainder as regular YAML.
+    let (stripped_str, directives) =
+      extract_hyprland_directives(&config_str);
+
     // TODO: Improve error formatting of serde_yaml errors. Something
     // similar to https://github.com/AlexanderThaller/format_serde_error
-    let config_value = serde_yaml::from_str(&config_str)?;
+    let mut config_value = serde_yaml::from_str::<ParsedConfig>(&stripped_str)?;
+
+    config_value.keybindings.extend(directives.keybindings);
+    config_value
+      .general
+      .startup_commands
+      .extend(directives.startup_commands);
+    config_value
+      .general
+      .shutdown_commands
+      .extend(directives.shutdown_commands);
 
     Ok((config_value, config_str))
   }
@@ -83,7 +104,7 @@ impl UserConfig {
       config_path.parent().context("Invalid config path.")?;
 
     fs::create_dir_all(parent_dir).with_context(|| {
-      format!("Unable to create directory {}.", &config_path.display())
+      format!("Unable to create directory {}.", config_path.display())
     })?;
 
     fs::write(config_path, SAMPLE_CONFIG).with_context(|| {

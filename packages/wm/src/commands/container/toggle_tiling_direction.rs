@@ -1,9 +1,9 @@
 use anyhow::Context;
 use wm_common::{TilingDirection, WmEvent};
 
-use super::{flatten_split_container, wrap_in_split_container};
+use super::flatten_split_container;
 use crate::{
-  models::{Container, DirectionContainer, SplitContainer, TilingWindow},
+  models::{Container, DirectionContainer, TilingWindow},
   traits::{CommonGetters, TilingDirectionGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -12,11 +12,11 @@ use crate::{
 pub fn toggle_tiling_direction(
   container: Container,
   state: &mut WmState,
-  config: &UserConfig,
+  _config: &UserConfig,
 ) -> anyhow::Result<()> {
   let direction_container = match container {
     Container::TilingWindow(tiling_window) => {
-      toggle_window_direction(tiling_window, config)
+      toggle_window_direction(&tiling_window)
     }
     Container::Workspace(workspace) => {
       workspace
@@ -37,8 +37,7 @@ pub fn toggle_tiling_direction(
 }
 
 fn toggle_window_direction(
-  tiling_window: TilingWindow,
-  config: &UserConfig,
+  tiling_window: &TilingWindow,
 ) -> anyhow::Result<DirectionContainer> {
   let parent = tiling_window
     .direction_container()
@@ -65,19 +64,12 @@ fn toggle_window_direction(
     };
   }
 
-  // Create a new split container to wrap the window.
-  let split_container = SplitContainer::new(
-    parent.tiling_direction().inverse(),
-    config.value.gaps.clone(),
-  );
+  // Rotate the axis of the enclosing split container (the one this
+  // window participates in) so the layout flips between vertical and
+  // horizontal while keeping the window and its siblings in place.
+  parent.set_tiling_direction(parent.tiling_direction().inverse());
 
-  wrap_in_split_container(
-    &split_container,
-    &parent.into(),
-    &[tiling_window.into()],
-  )?;
-
-  Ok(split_container.into())
+  Ok(parent)
 }
 
 pub fn set_tiling_direction(

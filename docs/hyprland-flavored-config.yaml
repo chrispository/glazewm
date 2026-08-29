@@ -80,6 +80,7 @@ exec-once = zebar
 # ─────────────────────────────────────────────────────────────────────
 
 # Close / exit.
+bind = SUPER, W, killactive
 bind = SUPER, Q, killactive
 bind = SUPER SHIFT, E, exit
 bind = SUPER SHIFT, R, reload
@@ -91,7 +92,7 @@ bind = SUPER, Return, exec, wezterm
 bind = SUPER, H, movefocus, l
 bind = SUPER, L, movefocus, r
 bind = SUPER, K, movefocus, u
-bind = SUPER, J, movefocus, d
+bind = SUPER, I, movefocus, d
 
 # Swap/move windows.
 bind = SUPER SHIFT, H, movewindow, l
@@ -99,8 +100,9 @@ bind = SUPER SHIFT, L, movewindow, r
 bind = SUPER SHIFT, K, movewindow, u
 bind = SUPER SHIFT, J, movewindow, d
 
-# Dwindle split control (Hyprland equivalent of togglesplit).
-bind = SUPER, V, togglesplit
+# Dwindle split control: SUPER+J toggles the split axis (vertical
+# <-> horizontal).
+bind = SUPER, J, togglesplit
 
 # Resize active window (pixel deltas).
 binde = SUPER ALT, H, resizeactive, -20 0

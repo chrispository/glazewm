@@ -32,8 +32,10 @@ use windows::{
     System::Environment::ExpandEnvironmentStringsW,
     UI::{
       Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_LBUTTON, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
-        VK_LWIN, VK_RBUTTON, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD,
+        KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+        VK_LBUTTON, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RBUTTON,
+        VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
       },
       Shell::{
         ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
@@ -649,6 +651,144 @@ impl Dispatcher {
         // The high-order bit is set while the key is down.
         (state.cast_unsigned() & 0x8000u16) != 0
       })
+    }
+  }
+
+  /// Synthesizes a keyboard shortcut, as if the user had typed it.
+  ///
+  /// The last key in `keys` is the trigger key; any preceding keys are
+  /// held as modifiers for its duration. Input is tagged so that this
+  /// process' own keyboard hook ignores it and no keybinding can recurse.
+  ///
+  /// Modifiers that the user is physically holding but that are not part
+  /// of `keys` are released first, so that a binding like `Win+C` sending
+  /// `Ctrl+C` delivers a clean chord rather than `Win+Ctrl+C`. The chord's
+  /// own modifiers are pressed before that release, which also stops the
+  /// Start menu from opening when the physical `Win` key is let go.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if `keys` is empty, or if the input could not be
+  /// sent (e.g. blocked by a more privileged window).
+  ///
+  /// # Platform-specific
+  ///
+  /// - **macOS**: Not implemented; returns an error.
+  pub fn send_keys(&self, keys: &[Key]) -> crate::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+      let _ = keys;
+      Err(crate::Error::Unsupported)
+    }
+    #[cfg(target_os = "windows")]
+    {
+      let (trigger_key, modifier_keys) =
+        keys.split_last().ok_or(crate::Error::EmptyShortcut)?;
+
+      // Modifiers held by the user that the chord does not ask for. These
+      // are released so they don't leak into the synthesized shortcut.
+      let held_modifiers = [Key::Win, Key::Ctrl, Key::Alt, Key::Shift]
+        .into_iter()
+        .filter(|key| !modifier_keys.contains(key))
+        .flat_map(Self::sided_key_codes)
+        .filter(|vk_code| Self::is_vk_down(*vk_code))
+        .collect::<Vec<_>>();
+
+      let mut inputs = Vec::new();
+
+      // Press the chord's modifiers first. Doing this before releasing a
+      // held `Win` key marks the `Win` press as consumed, so releasing it
+      // does not open the Start menu.
+      for key in modifier_keys {
+        inputs.push(Self::key_input(*key, false)?);
+      }
+
+      for vk_code in &held_modifiers {
+        inputs.push(Self::vk_input(*vk_code, true));
+      }
+
+      inputs.push(Self::key_input(*trigger_key, false)?);
+      inputs.push(Self::key_input(*trigger_key, true)?);
+
+      for key in modifier_keys.iter().rev() {
+        inputs.push(Self::key_input(*key, true)?);
+      }
+
+      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+      let sent = unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32)
+      };
+
+      if sent as usize == inputs.len() {
+        Ok(())
+      } else {
+        Err(crate::Error::from(windows::core::Error::from_win32()))
+      }
+    }
+  }
+
+  /// Gets the virtual key codes that a key may be reported as.
+  ///
+  /// Generic modifiers expand to both their left and right variants.
+  #[cfg(target_os = "windows")]
+  fn sided_key_codes(key: Key) -> Vec<u16> {
+    match key {
+      Key::Cmd | Key::Win => vec![VK_LWIN.0, VK_RWIN.0],
+      Key::Alt => vec![VK_LMENU.0, VK_RMENU.0],
+      Key::Ctrl => vec![VK_LCONTROL.0, VK_RCONTROL.0],
+      Key::Shift => vec![VK_LSHIFT.0, VK_RSHIFT.0],
+      _ => KeyCode::try_from(key).map_or_else(|_| vec![], |c| vec![c.0]),
+    }
+  }
+
+  /// Gets whether the given virtual key code is currently down.
+  #[cfg(target_os = "windows")]
+  fn is_vk_down(vk_code: u16) -> bool {
+    // SAFETY: `GetAsyncKeyState` takes a virtual key code and has no
+    // preconditions beyond it being in range.
+    let state = unsafe { GetAsyncKeyState(i32::from(vk_code)) };
+
+    (state.cast_unsigned() & 0x8000u16) != 0
+  }
+
+  /// Builds a keyboard [`INPUT`] event for the given key.
+  #[cfg(target_os = "windows")]
+  fn key_input(key: Key, is_release: bool) -> crate::Result<INPUT> {
+    // Generic modifiers are sent as their left variant, since a chord
+    // needs one concrete key rather than either side of a pair.
+    let vk_code = match key {
+      Key::Cmd | Key::Win => VK_LWIN.0,
+      Key::Alt => VK_LMENU.0,
+      Key::Ctrl => VK_LCONTROL.0,
+      Key::Shift => VK_LSHIFT.0,
+      _ => {
+        KeyCode::try_from(key)
+          .map_err(|_| crate::Error::UnsendableKey(key.to_string()))?
+          .0
+      }
+    };
+
+    Ok(Self::vk_input(vk_code, is_release))
+  }
+
+  /// Builds a keyboard [`INPUT`] event for the given virtual key code.
+  #[cfg(target_os = "windows")]
+  fn vk_input(vk_code: u16, is_release: bool) -> INPUT {
+    INPUT {
+      r#type: INPUT_KEYBOARD,
+      Anonymous: INPUT_0 {
+        ki: KEYBDINPUT {
+          wVk: VIRTUAL_KEY(vk_code),
+          wScan: 0,
+          dwFlags: if is_release {
+            KEYEVENTF_KEYUP
+          } else {
+            KEYBD_EVENT_FLAGS(0)
+          },
+          time: 0,
+          dwExtraInfo: platform_impl::INJECTED_KEY_MARKER,
+        },
+      },
     }
   }
 

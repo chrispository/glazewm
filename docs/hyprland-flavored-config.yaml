@@ -154,6 +154,22 @@ bind = SUPER SHIFT, 7, movetoworkspace, 7
 bind = SUPER SHIFT, 8, movetoworkspace, 8
 bind = SUPER SHIFT, 9, movetoworkspace, 9
 
+# macOS/omarchy-style editing shortcuts. `sendshortcut` synthesizes the
+# chord at the focused window, so SUPER takes the place of CTRL without
+# any system-wide remapping. These only apply while GlazeWM is running.
+#
+# See docs/exceptions.md for where this does not work (elevated windows,
+# reserved combos).
+bind = SUPER, C, sendshortcut, CTRL, C,
+bind = SUPER, V, sendshortcut, CTRL, V,
+bind = SUPER, X, sendshortcut, CTRL, X,
+bind = SUPER, A, sendshortcut, CTRL, A,
+bind = SUPER, Z, sendshortcut, CTRL, Z,
+bind = SUPER SHIFT, Z, sendshortcut, CTRL, Y,
+bind = SUPER, S, sendshortcut, CTRL, S,
+bind = SUPER, F, sendshortcut, CTRL, F,
+bind = SUPER, T, sendshortcut, CTRL, T,
+
 # Cycle through windows / monitors.
 bind = ALT, Tab, cyclenext
 bind = SUPER, F2, focusmonitor, 1

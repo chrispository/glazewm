@@ -16,6 +16,16 @@ use windows::Win32::{
 
 use crate::{Dispatcher, Key, KeyCode};
 
+/// Marker written to `dwExtraInfo` on keyboard input synthesized by this
+/// process (see `Dispatcher::send_keys`).
+///
+/// The keyboard hook ignores events carrying this marker, so that keys we
+/// inject cannot re-trigger a keybinding and recurse. `LLKHF_INJECTED` is
+/// deliberately not used for this, since it would also discard input from
+/// unrelated tools the user may rely on (e.g. `AutoHotkey`, remote
+/// desktop, on-screen keyboards).
+pub(crate) const INJECTED_KEY_MARKER: usize = 0x676C_617A;
+
 /// Callback stored in [`HOOK`] for intercepting keyboard events.
 type HookCallback = Box<dyn Fn(KeyEvent) -> bool>;
 
@@ -160,6 +170,13 @@ impl KeyboardHook {
 
     // Get struct with the keyboard input event.
     let input = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
+
+    // Pass through input that this process synthesized, so that a
+    // shortcut sent by `Dispatcher::send_keys` cannot match a keybinding
+    // and recurse.
+    if input.dwExtraInfo == INJECTED_KEY_MARKER {
+      return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
 
     #[allow(clippy::cast_possible_truncation)]
     let key_code = KeyCode(input.vkCode as u16);

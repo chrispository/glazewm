@@ -4,7 +4,7 @@ use clap::{error::KindFormatter, Args, Parser, ValueEnum};
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::Level;
 use uuid::Uuid;
-use wm_platform::{Delta, Direction, LengthValue, OpacityValue};
+use wm_platform::{Delta, Direction, Key, LengthValue, OpacityValue};
 
 use crate::TilingDirection;
 
@@ -205,6 +205,14 @@ pub enum InvokeCommand {
     visibility: TitleBarVisibility,
   },
   SetTransparency(SetTransparencyCommand),
+  /// Synthesizes a keyboard shortcut to the focused window.
+  ///
+  /// The last key is the trigger key; preceding keys are held as
+  /// modifiers. For example, `send-shortcut ctrl c` sends `Ctrl+C`.
+  SendShortcut {
+    #[clap(required = true, num_args = 1..)]
+    keys: Vec<Key>,
+  },
   ShellExec {
     #[clap(long, action)]
     hide_window: bool,

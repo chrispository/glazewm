@@ -626,6 +626,9 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
+      InvokeCommand::SendShortcut { keys } => {
+        state.dispatcher.send_keys(keys).map_err(Into::into)
+      }
       InvokeCommand::ShellExec {
         hide_window,
         command,

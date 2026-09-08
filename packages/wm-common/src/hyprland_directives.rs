@@ -523,6 +523,7 @@ fn translate_dispatcher(
         height: (height != 0).then(|| LengthValue::from_px(height)),
       }))
     }
+    "sendshortcut" | "sendkeys" => translate_send_shortcut(args),
     "exec" | "execr" | "shell" => Ok(InvokeCommand::ShellExec {
       hide_window: false,
       command: args.to_vec(),
@@ -550,6 +551,50 @@ fn translate_move_to_workspace(
     workspace: Some(target.clone()),
     ..Default::default()
   }))
+}
+
+/// Translates the `sendshortcut` dispatcher.
+///
+/// Hyprland's form is `sendshortcut, MODS, key, window`. The trailing
+/// window argument is unsupported: the shortcut always goes to the
+/// focused window, so anything after the key is rejected rather than
+/// silently sending to the wrong target.
+///
+/// Note that the comma structure of the original directive is already
+/// flattened by the time this is called, so `CTRL SHIFT, S` and
+/// `CTRL, SHIFT, S` both arrive as three tokens.
+fn translate_send_shortcut(
+  args: &[String],
+) -> Result<InvokeCommand, String> {
+  let mut keys: Vec<Key> = Vec::new();
+  let mut remaining = args.iter();
+
+  // Leading modifier tokens are held for the trigger key's duration.
+  let trigger_key = loop {
+    let token = remaining
+      .next()
+      .ok_or_else(|| "Missing key for 'sendshortcut'.".to_string())?;
+
+    match parse_modifier_token(&token.to_ascii_lowercase()) {
+      Some(modifier) => keys.push(modifier),
+      None => break parse_trigger_key(token)?,
+    }
+  };
+
+  // Hyprland allows targeting another window; `GlazeWM` always sends to
+  // the focused one, so reject rather than mislead.
+  if let Some(window_arg) = remaining.next() {
+    if !matches!(window_arg.as_str(), "activewindow" | "active") {
+      return Err(format!(
+        "Targeting a specific window ('{window_arg}') is unsupported \
+for 'sendshortcut'; it always applies to the focused window."
+      ));
+    }
+  }
+
+  keys.push(trigger_key);
+
+  Ok(InvokeCommand::SendShortcut { keys })
 }
 
 /// Translates the `workspace` dispatcher into a focus command.
@@ -901,6 +946,69 @@ mod tests {
     );
 
     // Untranslatable binds are dropped rather than breaking the config.
+    assert!(directives.keybindings.is_empty());
+  }
+
+  #[test]
+  fn test_sendshortcut_translation() {
+    let (_, directives) =
+      extract_hyprland_directives("bind = SUPER, C, sendshortcut, CTRL, C,\n");
+
+    let InvokeCommand::SendShortcut { keys } =
+      &directives.keybindings[0].commands[0]
+    else {
+      panic!("Expected SendShortcut.");
+    };
+
+    assert_eq!(keys, &[Key::Ctrl, Key::C]);
+  }
+
+  #[test]
+  fn test_sendshortcut_with_multiple_modifiers() {
+    let (_, directives) = extract_hyprland_directives(
+      "bind = SUPER, S, sendshortcut, CTRL SHIFT, S,\n",
+    );
+
+    let InvokeCommand::SendShortcut { keys } =
+      &directives.keybindings[0].commands[0]
+    else {
+      panic!("Expected SendShortcut.");
+    };
+
+    assert_eq!(keys, &[Key::Ctrl, Key::Shift, Key::S]);
+  }
+
+  #[test]
+  fn test_sendshortcut_with_keysym_key() {
+    let (_, directives) = extract_hyprland_directives(
+      "bind = SUPER, slash, sendshortcut, CTRL, slash,\n",
+    );
+
+    let InvokeCommand::SendShortcut { keys } =
+      &directives.keybindings[0].commands[0]
+    else {
+      panic!("Expected SendShortcut.");
+    };
+
+    assert_eq!(keys, &[Key::Ctrl, Key::OemQuestion]);
+  }
+
+  #[test]
+  fn test_sendshortcut_rejects_window_target() {
+    // Targeting another window is unsupported and must not be silently
+    // downgraded to sending at the focused window.
+    let (_, directives) = extract_hyprland_directives(
+      "bind = SUPER, C, sendshortcut, CTRL, C, class:^(kitty)$\n",
+    );
+
+    assert!(directives.keybindings.is_empty());
+  }
+
+  #[test]
+  fn test_sendshortcut_requires_a_key() {
+    let (_, directives) =
+      extract_hyprland_directives("bind = SUPER, C, sendshortcut, CTRL,\n");
+
     assert!(directives.keybindings.is_empty());
   }
 

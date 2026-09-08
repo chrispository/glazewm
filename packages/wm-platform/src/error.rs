@@ -74,6 +74,15 @@ pub enum Error {
 
   #[error("Keybinding is empty")]
   InvalidKeybinding,
+
+  #[error("Shortcut contains no keys")]
+  EmptyShortcut,
+
+  #[error("Key '{0}' cannot be synthesized")]
+  UnsendableKey(String),
+
+  #[error("Operation is unsupported on this platform")]
+  Unsupported,
 }
 
 #[derive(Debug, thiserror::Error)]

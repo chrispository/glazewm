@@ -46,8 +46,9 @@ fn set_tiling(
     .context("Invalid window state.")?
     .clone();
 
-  let workspace =
-    window.workspace().context("Window has no workspace.")?;
+  let workspace = window
+    .workspace()
+    .context("Window has no workspace when converting to tiling.")?;
 
   // Check whether insertion target is still valid.
   let insertion_target =
@@ -94,7 +95,8 @@ fn set_tiling(
     &target_parent,
     target_index,
     state,
-  )?;
+  )
+  .context("Failed to move window to its tiling insertion target.")?;
 
   #[allow(clippy::cast_precision_loss)]
   if let Some(insertion_target) = &insertion_target {
@@ -182,7 +184,8 @@ fn set_non_tiling(
           &workspace.clone().into(),
           workspace.child_count(),
           state,
-        )?;
+        )
+        .context("Failed to move window to workspace before making it non-tiling.")?;
       }
 
       replace_container(

@@ -210,8 +210,9 @@ fn redraw_containers(
   for window in windows_to_update.iter().rev() {
     let should_bring_to_front = windows_to_bring_to_front.contains(window);
 
-    let workspace =
-      window.workspace().context("Window has no workspace.")?;
+    let workspace = window
+      .workspace()
+      .context("Window has no workspace while redrawing.")?;
 
     let monitor = window.monitor().context("No monitor.")?;
     let hide_corner = monitors_by_hide_corner

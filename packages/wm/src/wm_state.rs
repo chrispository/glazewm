@@ -559,13 +559,30 @@ impl WmState {
   /// When redrawing after a command that changes a window's type (e.g.
   /// tiling -> floating), the original detached window might still be
   /// queued for a redraw and should be filtered out.
+  ///
+  /// Containers are filtered by whether they still resolve to a
+  /// workspace, rather than by `is_detached`. The latter only inspects a
+  /// container's immediate parent, so a container whose *ancestor* was
+  /// detached still passes it, and then fails further down the redraw
+  /// path where a workspace is required.
   pub fn windows_to_redraw(&self) -> Vec<WindowContainer> {
     self
       .pending_sync
       .containers_to_redraw()
       .values()
       .flat_map(CommonGetters::self_and_descendants)
-      .filter(|container| !container.is_detached())
+      .filter(|container| {
+        let is_attached = container.workspace().is_some();
+
+        if !is_attached {
+          warn!(
+            "Skipping redraw of container {} with no workspace.",
+            container.id()
+          );
+        }
+
+        is_attached
+      })
       .filter_map(|container| container.try_into().ok())
       .collect()
   }

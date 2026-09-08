@@ -67,6 +67,12 @@ pub struct WmState {
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
+  /// Active modifier-drag (e.g. Win+drag) moving a tiling window, if any.
+  ///
+  /// While set, mouse-move events reposition the window and a left-button
+  /// up drops it back into the tiling layout at the cursor's workspace.
+  pub drag_move: Option<DragMove>,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
@@ -75,6 +81,18 @@ pub struct WmState {
 
   /// Sender for gracefully shutting down the WM.
   exit_tx: mpsc::UnboundedSender<()>,
+}
+
+/// A modifier-drag (e.g. holding Win and dragging) that is currently
+/// moving a window.
+#[derive(Clone, Debug)]
+pub struct DragMove {
+  /// ID of the window currently being dragged.
+  pub window_id: Uuid,
+
+  /// Offset between the cursor position and the window's top-left corner
+  /// at the moment the drag started.
+  pub grab_offset: Point,
 }
 
 impl WmState {
@@ -94,6 +112,7 @@ impl WmState {
       ignored_windows: Vec::new(),
       is_paused: false,
       is_focus_synced: false,
+      drag_move: None,
       has_initialized: false,
       event_tx,
       exit_tx,
@@ -336,6 +355,14 @@ impl WmState {
       .windows()
       .into_iter()
       .find(|window| &*window.native() == native_window)
+  }
+
+  /// Gets window with the given container ID.
+  pub fn window_by_id(&self, id: Uuid) -> Option<WindowContainer> {
+    self
+      .windows()
+      .into_iter()
+      .find(|window| window.id() == id)
   }
 
   pub fn workspace_by_name(

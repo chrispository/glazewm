@@ -18,7 +18,10 @@ use objc2_application_services::{
 #[cfg(target_os = "macos")]
 use objc2_core_foundation::{CFBoolean, CFDictionary, CGPoint};
 #[cfg(target_os = "macos")]
-use objc2_core_graphics::{CGError, CGEvent, CGWarpMouseCursorPosition};
+use objc2_core_graphics::{
+  CGError, CGEvent, CGEventSource, CGEventSourceStateID,
+  CGWarpMouseCursorPosition,
+};
 #[cfg(target_os = "macos")]
 use objc2_foundation::NSString;
 #[cfg(target_os = "windows")]
@@ -29,7 +32,8 @@ use windows::{
     System::Environment::ExpandEnvironmentStringsW,
     UI::{
       Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
+        GetAsyncKeyState, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+        VK_LBUTTON, VK_RBUTTON,
       },
       Shell::{
         ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
@@ -49,7 +53,8 @@ use windows::{
 #[cfg(target_os = "macos")]
 use crate::platform_impl::Application;
 use crate::{
-  platform_impl, Display, DisplayDevice, MouseButton, NativeWindow, Point,
+  platform_impl, Display, DisplayDevice, Key, KeyCode, MouseButton,
+  NativeWindow, Point,
 };
 
 /// Type alias for a closure to be executed by the event loop.
@@ -598,6 +603,45 @@ impl Dispatcher {
       };
 
       // High-order bit set indicates the key is currently down.
+      let state = unsafe { GetAsyncKeyState(vk_code.into()) };
+      (state.cast_unsigned() & 0x8000u16) != 0
+    }
+  }
+
+  /// Gets whether the given key is currently pressed.
+  ///
+  /// Generic modifiers (e.g. `Key::Win`) match either their left or
+  /// right variant. This is a best-effort, cross-thread check.
+  #[must_use]
+  pub fn is_key_down(&self, key: Key) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+      // Query the current key state for the combined session. Generic
+      // modifiers are mapped to their macOS key codes via `KeyCode`.
+      let Some(key_code) = KeyCode::try_from(key).ok() else {
+        return false;
+      };
+
+      CGEventSource::key_state(
+        CGEventSourceStateID::CombinedSessionState,
+        key_code.0.into(),
+      )
+    }
+    #[cfg(target_os = "windows")]
+    {
+      // Generic modifiers match either their left or right variant.
+      let vk_code = match key {
+        Key::Cmd | Key::Win => VK_LWIN.0,
+        Key::Alt => VK_LMENU.0,
+        Key::Ctrl => VK_LCONTROL.0,
+        Key::Shift => VK_LSHIFT.0,
+        _ => KeyCode::try_from(key).map_or(0, |code| code.0),
+      };
+
+      if vk_code == 0 {
+        return false;
+      }
+
       let state = unsafe { GetAsyncKeyState(vk_code.into()) };
       (state.cast_unsigned() & 0x8000u16) != 0
     }

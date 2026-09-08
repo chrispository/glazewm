@@ -153,19 +153,15 @@ async fn start_wm(
   // Start listening for platform events after populating initial state.
   let mut window_listener = WindowListener::new(dispatcher)?;
   let mut display_listener = DisplayListener::new(dispatcher)?;
+  // `Move` events are always needed, since a modifier-drag (Win+drag)
+  // tracks the cursor regardless of `focus_follows_cursor`. The handler
+  // itself ignores moves when neither feature is active.
   let mut mouse_listener = MouseListener::new(
-    if config.value.general.focus_follows_cursor {
-      &[
-        MouseEventKind::Move,
-        MouseEventKind::LeftButtonDown,
-        MouseEventKind::LeftButtonUp,
-      ]
-    } else {
-      &[
-        MouseEventKind::LeftButtonDown,
-        MouseEventKind::LeftButtonUp,
-      ]
-    },
+    &[
+      MouseEventKind::Move,
+      MouseEventKind::LeftButtonDown,
+      MouseEventKind::LeftButtonUp,
+    ],
     dispatcher,
   )?;
   let mut keybinding_listener = KeybindingListener::new(
@@ -255,7 +251,9 @@ async fn start_wm(
           let _ = mouse_listener.enable(!is_paused);
         }
 
-        // Update keybinding and mouse listeners on config changes.
+        // Update the keybinding listener on config changes. The mouse
+        // listener's enabled events are constant, and it is enabled or
+        // disabled as a whole on pause changes above.
         if matches!(
           wm_event,
           WmEvent::UserConfigChanged { .. }
@@ -268,21 +266,6 @@ async fn start_wm(
               .flat_map(|kb| kb.bindings)
               .collect::<Vec<_>>(),
           );
-
-          mouse_listener.set_enabled_events(
-            if config.value.general.focus_follows_cursor {
-              &[
-                MouseEventKind::Move,
-                MouseEventKind::LeftButtonDown,
-                MouseEventKind::LeftButtonUp,
-              ]
-            } else {
-              &[
-                MouseEventKind::LeftButtonDown,
-                MouseEventKind::LeftButtonUp,
-              ]
-            },
-          )?;
         }
 
         if let Err(err) = ipc_server.process_event(wm_event) {

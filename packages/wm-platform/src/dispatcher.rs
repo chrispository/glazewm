@@ -32,8 +32,8 @@ use windows::{
     System::Environment::ExpandEnvironmentStringsW,
     UI::{
       Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-        VK_LBUTTON, VK_RBUTTON,
+        GetAsyncKeyState, VK_LBUTTON, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
+        VK_LWIN, VK_RBUTTON, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
       },
       Shell::{
         ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
@@ -630,20 +630,25 @@ impl Dispatcher {
     #[cfg(target_os = "windows")]
     {
       // Generic modifiers match either their left or right variant.
-      let vk_code = match key {
-        Key::Cmd | Key::Win => VK_LWIN.0,
-        Key::Alt => VK_LMENU.0,
-        Key::Ctrl => VK_LCONTROL.0,
-        Key::Shift => VK_LSHIFT.0,
-        _ => KeyCode::try_from(key).map_or(0, |code| code.0),
+      // `VK_LWIN`/`VK_RWIN` have no combined virtual key, and the
+      // combined `VK_MENU`/`VK_CONTROL`/`VK_SHIFT` codes are checked
+      // through their sided variants for consistency.
+      let vk_codes: [Option<u16>; 2] = match key {
+        Key::Cmd | Key::Win => [Some(VK_LWIN.0), Some(VK_RWIN.0)],
+        Key::Alt => [Some(VK_LMENU.0), Some(VK_RMENU.0)],
+        Key::Ctrl => [Some(VK_LCONTROL.0), Some(VK_RCONTROL.0)],
+        Key::Shift => [Some(VK_LSHIFT.0), Some(VK_RSHIFT.0)],
+        _ => [KeyCode::try_from(key).ok().map(|code| code.0), None],
       };
 
-      if vk_code == 0 {
-        return false;
-      }
+      vk_codes.into_iter().flatten().any(|vk_code| {
+        // SAFETY: `GetAsyncKeyState` takes a virtual key code and has no
+        // preconditions beyond it being in range.
+        let state = unsafe { GetAsyncKeyState(i32::from(vk_code)) };
 
-      let state = unsafe { GetAsyncKeyState(vk_code.into()) };
-      (state.cast_unsigned() & 0x8000u16) != 0
+        // The high-order bit is set while the key is down.
+        (state.cast_unsigned() & 0x8000u16) != 0
+      })
     }
   }
 

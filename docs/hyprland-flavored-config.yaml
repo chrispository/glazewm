@@ -16,6 +16,12 @@
 # Regular GlazeWM settings
 # ─────────────────────────────────────────────────────────────────────
 
+general:
+  # Focus whichever window the cursor is over, without needing to click.
+  # Matches Hyprland's default focus-follows-mouse behavior, and makes
+  # commands like `resizeactive` act on the hovered window.
+  focus_follows_cursor: true
+
 gaps:
   scale_with_dpi: true
 
@@ -110,6 +116,13 @@ binde = SUPER ALT, L, resizeactive, 20 0
 binde = SUPER ALT, K, resizeactive, 0 -20
 binde = SUPER ALT, J, resizeactive, 0 20
 
+# Grow/shrink the active window. Punctuation keys use their X11 keysym
+# name, as in hyprland.conf ('minus', 'equal', 'bracketleft', etc.).
+binde = SUPER, minus, resizeactive, -100 0
+binde = SUPER, equal, resizeactive, 100 0
+binde = SUPER SHIFT, minus, resizeactive, 0 -100
+binde = SUPER SHIFT, equal, resizeactive, 0 100
+
 # Enter resize mode defined above (arrow keys/HJKL + escape to exit).
 bind = SUPER ALT, R, wm-enable-binding-mode --name resize
 
@@ -129,7 +142,8 @@ bind = SUPER, 7, workspace, 7
 bind = SUPER, 8, workspace, 8
 bind = SUPER, 9, workspace, 9
 
-# Send focused window to a workspace (with shift, following focus).
+# Send focused window to a workspace. Focus stays on the current
+# workspace, i.e. this behaves like Hyprland's `movetoworkspacesilent`.
 bind = SUPER SHIFT, 1, movetoworkspace, 1
 bind = SUPER SHIFT, 2, movetoworkspace, 2
 bind = SUPER SHIFT, 3, movetoworkspace, 3

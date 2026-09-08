@@ -73,91 +73,96 @@ fn toggle_window_direction(
     };
   }
 
-  // When the enclosing split contains exactly the focused window and one
-  // sibling window (i.e. a plain pair), changing its axis rotates just
-  // that pair.
+  // Dwindle insertion only ever creates splits that hold exactly two
+  // children, so flipping the enclosing split's axis rotates precisely
+  // that pair. The sibling may itself be a split container (i.e. a
+  // nested subtree), which is rotated along with it — this matches
+  // Hyprland's `togglesplit`.
   let parent_children = parent.tiling_children().collect::<Vec<_>>();
-  let is_plain_pair = parent_children.len() == 2
-    && parent_children
-      .iter()
-      .all(|child| matches!(child, TilingContainer::TilingWindow(_)));
 
-  if is_plain_pair {
+  if parent_children.len() == 2 {
     parent.set_tiling_direction(parent.tiling_direction().inverse());
 
     return Ok(parent);
   }
 
-  // Otherwise, isolate the focused window and its nearest neighbor into
-  // a new perpendicular split so the toggle only affects the pair (and
-  // not the other windows in the split).
-  let nearest_sibling = nearest_sibling(tiling_window, &tiling_siblings)?;
+  // Splits with more than two children can still arise (e.g. from moving
+  // windows between workspaces). Isolate the focused window and its
+  // nearest neighbor into a new perpendicular split so the toggle only
+  // affects the pair, and not the other children of the split.
+  let position = parent_children
+    .iter()
+    .position(|child| child.id() == tiling_window.id())
+    .context("Window is not a child of its own parent.")?;
+
+  let Some((neighbor, neighbor_position)) =
+    nearest_adjacent_sibling(tiling_window, &parent_children, position)?
+  else {
+    // No adjacent sibling to pair with, so fall back to flipping the
+    // whole split.
+    parent.set_tiling_direction(parent.tiling_direction().inverse());
+
+    return Ok(parent);
+  };
 
   let split_container = SplitContainer::new(
     parent.tiling_direction().inverse(),
     tiling_window.gaps_config().clone(),
   );
 
-  // Order matters: the focused window must come first so the near
-  // sibling is placed on the opposite side.
-  let pair = nearest_sibling_window(tiling_window, &nearest_sibling);
+  // Order matters: the left/top-most container must come first so that
+  // `wrap_in_split_container` preserves the visual order.
+  let pair: [TilingContainer; 2] = if position < neighbor_position {
+    [tiling_window.clone().into(), neighbor]
+  } else {
+    [neighbor, tiling_window.clone().into()]
+  };
 
-  wrap_in_split_container(
-    &split_container,
-    &parent.into(),
-    &[pair.0, pair.1],
-  )?;
+  wrap_in_split_container(&split_container, &parent.into(), &pair)?;
 
   Ok(split_container.into())
 }
 
-/// Returns the closest tiling sibling to the given window, based on the
-/// center-to-center distance of their rectangles.
-fn nearest_sibling(
+/// Returns the tiling container immediately before or after the given
+/// window within its parent, whichever is closest by center-to-center
+/// distance.
+///
+/// Candidates are restricted to adjacent siblings so that the resulting
+/// pair stays contiguous, which `wrap_in_split_container` requires in
+/// order to preserve the layout's visual order.
+///
+/// Returns the neighbor along with its position in `siblings`, or `None`
+/// when the window has no siblings at all.
+fn nearest_adjacent_sibling(
   tiling_window: &TilingWindow,
   siblings: &[TilingContainer],
-) -> anyhow::Result<TilingWindow> {
-  let window_rect = tiling_window.to_rect()?;
-  let window_center = rect_center(&window_rect);
+  position: usize,
+) -> anyhow::Result<Option<(TilingContainer, usize)>> {
+  let window_center = rect_center(&tiling_window.to_rect()?);
 
-  siblings
-    .iter()
-    .filter_map(|sibling| match sibling {
-      TilingContainer::TilingWindow(window) => Some(window.clone()),
-      TilingContainer::Split(_) => None,
+  let nearest = [position.checked_sub(1), position.checked_add(1)]
+    .into_iter()
+    .flatten()
+    .filter_map(|index| {
+      siblings.get(index).map(|sibling| (sibling.clone(), index))
     })
-    .min_by_key(|sibling| {
-      let distance = sibling
-        .to_rect()
-        .map_or(f32::MAX, |r| {
-          let center = rect_center(&r);
-          square_distance(window_center, center)
-        });
+    .min_by(|(sibling_a, _), (sibling_b, _)| {
+      distance_to_center(sibling_a, window_center)
+        .total_cmp(&distance_to_center(sibling_b, window_center))
+    });
 
-      // Use an integer key so `min_by_key` can be used directly.
-      distance.to_bits()
-    })
-    .context("Unable to find nearest sibling.")
+  Ok(nearest)
 }
 
-/// Returns the focused window and its neighbor as a pair of
-/// [`TilingContainer`]s in left-to-right / top-to-bottom order so that
-/// `wrap_in_split_container` preserves the visual order.
-#[must_use]
-fn nearest_sibling_window(
-  tiling_window: &TilingWindow,
-  nearest: &TilingWindow,
-) -> (TilingContainer, TilingContainer) {
-  let focused = tiling_window.clone().into();
-  let neighbor = nearest.clone().into();
-
-  // Ensure the pair is ordered by their position in the parent so that
-  // the left/top-most window stays on the left/top.
-  if tiling_window.index() < nearest.index() {
-    (focused, neighbor)
-  } else {
-    (neighbor, focused)
-  }
+/// Computes the squared distance from a container's center to the given
+/// point.
+///
+/// Returns `f32::MAX` for containers with no computable rect so that they
+/// sort last.
+fn distance_to_center(container: &TilingContainer, point: (f32, f32)) -> f32 {
+  container.to_rect().map_or(f32::MAX, |rect| {
+    square_distance(point, rect_center(&rect))
+  })
 }
 
 /// Gets the center point of a rectangle.
@@ -190,5 +195,113 @@ pub fn set_tiling_direction(
     Ok(())
   } else {
     toggle_tiling_direction(container, state, config)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::TilingDirection;
+
+  use super::toggle_window_direction;
+  use crate::{
+    models::{Monitor, SplitContainer, TilingWindow, Workspace},
+    traits::{CommonGetters, TilingDirectionGetters},
+  };
+
+  /// Toggling a window whose only sibling is a nested split must rotate
+  /// the enclosing split, rather than failing to find a window sibling.
+  #[test]
+  fn toggles_split_with_nested_sibling() {
+    let window = TilingWindow::mock().tiling_size(0.5).call();
+
+    let nested = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .tiling_containers(vec![
+        TilingWindow::mock().call().into(),
+        TilingWindow::mock().call().into(),
+      ])
+      .call();
+
+    let parent = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Horizontal)
+      .tiling_containers(vec![window.clone().into(), nested.into()])
+      .call();
+
+    let _workspace = Workspace::mock()
+      .tiling_containers(vec![parent.clone().into()])
+      .call();
+
+    let result = toggle_window_direction(&window).unwrap();
+
+    assert_eq!(parent.tiling_direction(), TilingDirection::Vertical);
+    assert_eq!(result.id(), parent.id());
+  }
+
+  #[test]
+  fn toggles_split_of_a_window_pair() {
+    let window = TilingWindow::mock().tiling_size(0.5).call();
+
+    let parent = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Horizontal)
+      .tiling_containers(vec![
+        window.clone().into(),
+        TilingWindow::mock().tiling_size(0.5).call().into(),
+      ])
+      .call();
+
+    let _workspace = Workspace::mock()
+      .tiling_containers(vec![parent.clone().into()])
+      .call();
+
+    toggle_window_direction(&window).unwrap();
+
+    assert_eq!(parent.tiling_direction(), TilingDirection::Vertical);
+  }
+
+  #[test]
+  fn toggles_workspace_direction_for_an_only_child() {
+    let window = TilingWindow::mock().call();
+
+    let workspace = Workspace::mock()
+      .tiling_direction(TilingDirection::Horizontal)
+      .tiling_containers(vec![window.clone().into()])
+      .call();
+
+    let result = toggle_window_direction(&window).unwrap();
+
+    assert_eq!(workspace.tiling_direction(), TilingDirection::Vertical);
+    assert_eq!(result.id(), workspace.id());
+  }
+
+  /// Splits with more than two children isolate the focused window and an
+  /// adjacent sibling into a new perpendicular split.
+  #[test]
+  fn isolates_a_pair_out_of_a_larger_split() {
+    let window = TilingWindow::mock().tiling_size(1.0 / 3.0).call();
+
+    let workspace = Workspace::mock()
+      .tiling_direction(TilingDirection::Horizontal)
+      .tiling_containers(vec![
+        TilingWindow::mock().tiling_size(1.0 / 3.0).call().into(),
+        window.clone().into(),
+        TilingWindow::mock().tiling_size(1.0 / 3.0).call().into(),
+      ])
+      .call();
+
+    // A monitor is needed so that the containers have computable rects.
+    let _monitor = Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    let result = toggle_window_direction(&window).unwrap();
+
+    assert_eq!(result.tiling_direction(), TilingDirection::Vertical);
+    assert_eq!(result.tiling_children().count(), 2);
+
+    // The workspace keeps its direction and is left with the new split
+    // plus the remaining window.
+    assert_eq!(workspace.tiling_direction(), TilingDirection::Horizontal);
+    assert_eq!(workspace.tiling_children().count(), 2);
+
+    let new_parent = window.parent().unwrap();
+    assert_eq!(new_parent.id(), result.id());
   }
 }

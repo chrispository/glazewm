@@ -327,7 +327,13 @@ fn parse_modifier_token(token: &str) -> Option<Key> {
   }
 }
 
-/// Parses a trigger key token (e.g. `Q`, `Return`, `KP_Add`).
+/// Parses a trigger key token (e.g. `Q`, `Return`, `minus`, `KP_Add`).
+///
+/// Hyprland names keys after their X11 keysym, so punctuation, numpad and
+/// media keys are spelled out (e.g. `minus`, `bracketleft`,
+/// `XF86AudioRaiseVolume`) rather than written literally. Those names are
+/// resolved via [`parse_keysym`]; anything else falls back to `GlazeWM`'s
+/// own key names and then to a single literal character (e.g. `-`).
 ///
 /// Mouse buttons are unsupported and result in an error.
 fn parse_trigger_key(token: &str) -> Result<Key, String> {
@@ -337,12 +343,100 @@ fn parse_trigger_key(token: &str) -> Result<Key, String> {
     ));
   }
 
-  if token.to_ascii_lowercase().as_str() == "return" { return Ok(Key::Enter) }
+  if let Some(key) = parse_keysym(token) {
+    return Ok(key);
+  }
 
-  token
-    .parse::<Key>()
-    .or_else(|_| Key::try_from_literal(token))
-    .map_err(|err| format!("Unknown key '{token}': {err}."))
+  if let Ok(key) = token.parse::<Key>() {
+    return Ok(key);
+  }
+
+  // `Key::try_from_literal` only inspects the first character of the
+  // token, so restrict it to single-character keys. Otherwise an
+  // unrecognized keysym such as `minus` would silently bind to `m`.
+  let is_literal = token.chars().count() == 1;
+
+  if is_literal {
+    if let Ok(key) = Key::try_from_literal(token) {
+      return Ok(key);
+    }
+  }
+
+  Err(format!("Unknown key '{token}'."))
+}
+
+/// Maps an X11/Hyprland keysym name to its corresponding [`Key`].
+///
+/// Only keysyms whose name differs from `GlazeWM`'s own key names are
+/// listed; the rest (e.g. `space`, `tab`, `escape`, `f1`) already parse
+/// via `Key`'s `FromStr`.
+///
+/// # Platform-specific
+///
+/// - **Windows/macOS**: Punctuation keysyms map to the OEM key at that
+///   position on a US layout. On other layouts the physical key may
+///   differ, matching how `GlazeWM` treats OEM keys generally.
+#[must_use]
+fn parse_keysym(token: &str) -> Option<Key> {
+  // Keysyms are matched case-insensitively, and `KP_Add`/`kp_add` are
+  // treated the same.
+  let name = token.to_ascii_lowercase();
+
+  let key = match name.as_str() {
+    // Punctuation. Shifted spellings (e.g. `plus`, `underscore`) map to
+    // the same physical key as their unshifted counterpart, since a
+    // binding's modifiers are declared separately.
+    "minus" | "underscore" => Key::OemMinus,
+    "equal" | "plus" => Key::OemPlus,
+    "comma" | "less" => Key::OemComma,
+    "period" | "greater" => Key::OemPeriod,
+    "slash" | "question" => Key::OemQuestion,
+    "semicolon" | "colon" => Key::OemSemicolon,
+    "apostrophe" | "quotedbl" => Key::OemQuotes,
+    "grave" | "asciitilde" => Key::OemTilde,
+    "bracketleft" | "braceleft" => Key::OemOpenBrackets,
+    "bracketright" | "braceright" => Key::OemCloseBrackets,
+    "backslash" | "bar" => Key::OemPipe,
+
+    // Keys whose keysym name differs from the `GlazeWM` name.
+    "return" => Key::Enter,
+    "prior" | "page_up" => Key::PageUp,
+    "next" | "page_down" => Key::PageDown,
+    "print" => Key::PrintScreen,
+    "caps_lock" => Key::CapsLock,
+    "num_lock" => Key::NumLock,
+    "scroll_lock" => Key::ScrollLock,
+
+    // Numpad.
+    "kp_add" => Key::NumpadAdd,
+    "kp_subtract" => Key::NumpadSubtract,
+    "kp_multiply" => Key::NumpadMultiply,
+    "kp_divide" => Key::NumpadDivide,
+    "kp_decimal" | "kp_separator" => Key::NumpadDecimal,
+    "kp_0" | "kp_insert" => Key::Numpad0,
+    "kp_1" | "kp_end" => Key::Numpad1,
+    "kp_2" | "kp_down" => Key::Numpad2,
+    "kp_3" | "kp_next" => Key::Numpad3,
+    "kp_4" | "kp_left" => Key::Numpad4,
+    "kp_5" | "kp_begin" => Key::Numpad5,
+    "kp_6" | "kp_right" => Key::Numpad6,
+    "kp_7" | "kp_home" => Key::Numpad7,
+    "kp_8" | "kp_up" => Key::Numpad8,
+    "kp_9" | "kp_prior" => Key::Numpad9,
+
+    // Media keys.
+    "xf86audioraisevolume" => Key::VolumeUp,
+    "xf86audiolowervolume" => Key::VolumeDown,
+    "xf86audiomute" => Key::VolumeMute,
+    "xf86audionext" => Key::MediaNextTrack,
+    "xf86audioprev" => Key::MediaPrevTrack,
+    "xf86audiostop" => Key::MediaStop,
+    "xf86audioplay" | "xf86audiopause" => Key::MediaPlayPause,
+
+    _ => return None,
+  };
+
+  Some(key)
 }
 
 /// Translates a Hyprland dispatcher name and its arguments into a
@@ -415,9 +509,18 @@ fn translate_dispatcher(
       let width = parse_resize_delta(args.first())?;
       let height = parse_resize_delta(args.get(1))?;
 
+      if width == 0 && height == 0 {
+        return Err(
+          "Resize deltas for 'resizeactive' cannot both be zero.".into(),
+        );
+      }
+
+      // Zero deltas are omitted so that the resize only touches the
+      // intended axis, rather than also re-applying the current size on
+      // the other one.
       Ok(InvokeCommand::Resize(InvokeResizeCommand {
-        width: Some(LengthValue::from_px(width)),
-        height: Some(LengthValue::from_px(height)),
+        width: (width != 0).then(|| LengthValue::from_px(width)),
+        height: (height != 0).then(|| LengthValue::from_px(height)),
       }))
     }
     "exec" | "execr" | "shell" => Ok(InvokeCommand::ShellExec {
@@ -504,8 +607,6 @@ fn parse_resize_delta(arg: Option<&String>) -> Result<i32, String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  use crate::ParsedConfig;
 
   #[test]
   fn test_bind_translation_killactive() {
@@ -800,6 +901,82 @@ mod tests {
     );
 
     // Untranslatable binds are dropped rather than breaking the config.
+    assert!(directives.keybindings.is_empty());
+  }
+
+  #[test]
+  fn test_punctuation_keysyms() {
+    for (keysym, expected) in [
+      ("minus", Key::OemMinus),
+      ("equal", Key::OemPlus),
+      ("plus", Key::OemPlus),
+      ("comma", Key::OemComma),
+      ("period", Key::OemPeriod),
+      ("slash", Key::OemQuestion),
+      ("bracketleft", Key::OemOpenBrackets),
+      ("bracketright", Key::OemCloseBrackets),
+      ("grave", Key::OemTilde),
+      ("backslash", Key::OemPipe),
+      ("Print", Key::PrintScreen),
+      ("Prior", Key::PageUp),
+      ("KP_Add", Key::NumpadAdd),
+      ("XF86AudioRaiseVolume", Key::VolumeUp),
+    ] {
+      let config_str = format!("bind = SUPER, {keysym}, killactive\n");
+
+      let (_, directives) = extract_hyprland_directives(&config_str);
+
+      let keys = directives
+        .keybindings
+        .first()
+        .unwrap_or_else(|| panic!("Keysym '{keysym}' was not translated."))
+        .bindings[0]
+        .keys();
+
+      assert_eq!(keys, &[Key::Win, expected], "Wrong key for '{keysym}'.");
+    }
+  }
+
+  #[test]
+  fn test_multi_char_keysym_does_not_fall_back_to_first_letter() {
+    // `Key::try_from_literal` only inspects the first character, so an
+    // unknown keysym must be rejected rather than silently binding to it.
+    let (_, directives) =
+      extract_hyprland_directives("bind = SUPER, dead_acute, killactive\n");
+
+    assert!(directives.keybindings.is_empty());
+  }
+
+  #[test]
+  fn test_single_literal_key_still_parses() {
+    let (_, directives) =
+      extract_hyprland_directives("bind = SUPER, -, killactive\n");
+
+    let keys = directives.keybindings[0].bindings[0].keys();
+
+    assert_eq!(keys, &[Key::Win, Key::OemMinus]);
+  }
+
+  #[test]
+  fn test_resizeactive_omits_zero_delta() {
+    let (_, directives) =
+      extract_hyprland_directives("binde = SUPER, minus, resizeactive, -100 0\n");
+
+    let InvokeCommand::Resize(InvokeResizeCommand { width, height }) =
+      &directives.keybindings[0].commands[0]
+    else {
+      panic!("Expected Resize.");
+    };
+
+    assert_eq!(width.as_ref().map(|l| l.amount), Some(-100.0));
+    assert!(height.is_none(), "Zero height delta should be omitted.");
+  }
+
+  #[test]
+  fn test_resizeactive_rejects_all_zero_deltas() {
+    let (_, directives) =
+      extract_hyprland_directives("binde = SUPER, minus, resizeactive, 0 0\n");
+
     assert!(directives.keybindings.is_empty());
   }
 

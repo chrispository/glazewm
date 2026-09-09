@@ -28,7 +28,7 @@ use crate::{
     window::{
       ignore_window, move_window_in_direction, move_window_to_workspace,
       resize_window, set_window_position, set_window_size,
-      update_window_state, WindowPositionTarget,
+      swap_window_in_direction, update_window_state, WindowPositionTarget,
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,
@@ -641,6 +641,14 @@ impl WindowManager {
             args.height.clone(),
             state,
           ),
+          _ => Ok(()),
+        }
+      }
+      InvokeCommand::Swap { direction } => {
+        match subject_container.as_window_container() {
+          Ok(window) => {
+            swap_window_in_direction(&window, direction, state)
+          }
           _ => Ok(()),
         }
       }

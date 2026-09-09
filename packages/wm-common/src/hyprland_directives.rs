@@ -478,12 +478,13 @@ fn translate_dispatcher(
         ..Default::default()
       },
     )),
-    "movewindow" | "swapwindow" => Ok(InvokeCommand::Move(
-      InvokeMoveCommand {
-        direction: Some(parse_direction(args.first())?),
-        ..Default::default()
-      },
-    )),
+    "movewindow" => Ok(InvokeCommand::Move(InvokeMoveCommand {
+      direction: Some(parse_direction(args.first())?),
+      ..Default::default()
+    })),
+    "swapwindow" => Ok(InvokeCommand::Swap {
+      direction: parse_direction(args.first())?,
+    }),
     "movetoworkspace" | "movetoworkspacesilent" => {
       translate_move_to_workspace(args)
     }
@@ -947,6 +948,38 @@ mod tests {
 
     // Untranslatable binds are dropped rather than breaking the config.
     assert!(directives.keybindings.is_empty());
+  }
+
+  #[test]
+  fn test_swapwindow_translation() {
+    let (_, directives) = extract_hyprland_directives(
+      "bind = SUPER SHIFT, left, swapwindow, l\n",
+    );
+
+    assert_eq!(
+      directives.keybindings[0].commands[0],
+      InvokeCommand::Swap {
+        direction: Direction::Left
+      }
+    );
+
+    let keys = directives.keybindings[0].bindings[0].keys();
+
+    assert_eq!(keys, &[Key::Win, Key::Shift, Key::Left]);
+  }
+
+  #[test]
+  fn test_movewindow_is_not_a_swap() {
+    // `movewindow` re-parents the window (and can leave the workspace),
+    // whereas `swapwindow` only trades places with a neighbor.
+    let (_, directives) = extract_hyprland_directives(
+      "bind = SUPER SHIFT, H, movewindow, l\n",
+    );
+
+    assert!(matches!(
+      directives.keybindings[0].commands[0],
+      InvokeCommand::Move(_)
+    ));
   }
 
   #[test]

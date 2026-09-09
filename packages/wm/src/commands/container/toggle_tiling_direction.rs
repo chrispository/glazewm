@@ -35,6 +35,12 @@ pub fn toggle_tiling_direction(
     _ => return Ok(()),
   }?;
 
+  // Rotating the split axis changes the geometry of every window beneath
+  // the affected direction container, so queue them all for a redraw.
+  state
+    .pending_sync
+    .queue_containers_to_redraw(direction_container.tiling_children());
+
   state.emit_event(WmEvent::TilingDirectionChanged {
     direction_container: direction_container.to_dto()?,
     new_tiling_direction: direction_container.tiling_direction(),

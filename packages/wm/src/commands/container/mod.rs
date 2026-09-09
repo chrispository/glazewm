@@ -9,6 +9,8 @@ mod move_container_within_tree;
 mod replace_container;
 mod resize_tiling_container;
 mod set_focused_descendant;
+mod swap_containers;
+mod tiling_window_in_direction;
 mod toggle_tiling_direction;
 mod wrap_in_split_container;
 
@@ -23,5 +25,7 @@ pub use move_container_within_tree::*;
 pub use replace_container::*;
 pub use resize_tiling_container::*;
 pub use set_focused_descendant::*;
+pub use swap_containers::*;
+pub use tiling_window_in_direction::*;
 pub use toggle_tiling_direction::*;
 pub use wrap_in_split_container::*;

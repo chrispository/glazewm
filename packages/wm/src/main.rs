@@ -28,6 +28,8 @@ use wm_platform::{
   MouseEventKind, MouseListener, PlatformEvent, SingleInstance,
   WindowListener,
 };
+#[cfg(target_os = "windows")]
+use wm_platform::{Key, MouseButton, MouseHook};
 
 use crate::{
   ipc_server::IpcServer, sys_tray::SystemTray, user_config::UserConfig,
@@ -161,9 +163,44 @@ async fn start_wm(
       MouseEventKind::Move,
       MouseEventKind::LeftButtonDown,
       MouseEventKind::LeftButtonUp,
+      MouseEventKind::RightButtonDown,
+      MouseEventKind::RightButtonUp,
     ],
     dispatcher,
   )?;
+
+  // Swallow right-clicks made while the Win key is held, so that the
+  // Win+right-drag resize doesn't also open a context menu in the
+  // application under the cursor. The mouse listener is backed by raw
+  // input, which is unaffected by this hook and still observes the click.
+  #[cfg(target_os = "windows")]
+  let mut mouse_hook = {
+    let hook_dispatcher = dispatcher.clone();
+
+    // Whether the press of the current right-click was swallowed. Its
+    // release has to be swallowed as well, even if the Win key was let go
+    // in the meantime.
+    let is_press_intercepted = std::sync::atomic::AtomicBool::new(false);
+
+    MouseHook::new(
+      move |event| {
+        use std::sync::atomic::Ordering;
+
+        if event.button != MouseButton::Right {
+          return false;
+        }
+
+        if event.is_press {
+          let should_intercept = hook_dispatcher.is_key_down(Key::Win);
+          is_press_intercepted.store(should_intercept, Ordering::Relaxed);
+          should_intercept
+        } else {
+          is_press_intercepted.swap(false, Ordering::Relaxed)
+        }
+      },
+      dispatcher,
+    )?
+  };
   let mut keybinding_listener = KeybindingListener::new(
     &config
       .active_keybinding_configs(&[], false)
@@ -246,9 +283,12 @@ async fn start_wm(
       Some(wm_event) = wm.event_rx.recv() => {
         tracing::debug!("Received WM event: {:?}", wm_event);
 
-        // Disable mouse listener when the WM is paused.
+        // Disable mouse listener and hook when the WM is paused.
         if let WmEvent::PauseChanged { is_paused } = wm_event {
           let _ = mouse_listener.enable(!is_paused);
+
+          #[cfg(target_os = "windows")]
+          mouse_hook.enable(!is_paused);
         }
 
         // Update the keybinding listener on config changes. The mouse

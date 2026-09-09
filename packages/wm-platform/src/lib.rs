@@ -9,6 +9,8 @@ mod error;
 mod event_loop;
 mod keybinding_listener;
 mod models;
+#[cfg(target_os = "windows")]
+mod mouse_hook;
 mod mouse_listener;
 mod native_window;
 mod platform_event;
@@ -27,6 +29,8 @@ pub use error::*;
 pub use event_loop::*;
 pub use keybinding_listener::*;
 pub use models::*;
+#[cfg(target_os = "windows")]
+pub use mouse_hook::*;
 pub use mouse_listener::*;
 pub use native_window::*;
 pub use platform_event::*;

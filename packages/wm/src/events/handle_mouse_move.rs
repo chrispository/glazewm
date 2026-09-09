@@ -7,7 +7,8 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::{SWP_NOACTIVATE, SWP_NOSENDCHANGING};
 use wm_platform::{
-  Key, MouseButton, MouseEvent, Point, Rect, WindowId, WindowZOrder,
+  Key, LengthValue, MouseButton, MouseEvent, Point, Rect, WindowId,
+  WindowZOrder,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -15,11 +16,15 @@ use wm_platform::NativeWindowWindowsExt;
 use crate::{
   commands::{
     container::set_focused_descendant,
-    window::update_window_state,
+    window::{
+      set_window_size, update_window_state, MIN_FLOATING_HEIGHT,
+      MIN_FLOATING_WIDTH,
+    },
   },
-  traits::{CommonGetters, WindowGetters},
+  models::WindowContainer,
+  traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
-  wm_state::WmState,
+  wm_state::{DragResize, ResizeEdges, WmState},
 };
 #[cfg(target_os = "macos")]
 use crate::{
@@ -75,6 +80,11 @@ pub fn handle_mouse_move(
     {
       handle_drag_start(position, state, config)?;
     }
+    MouseEvent::ButtonDown { button, position, .. }
+      if *button == MouseButton::Right =>
+    {
+      handle_resize_start(position, state)?;
+    }
     MouseEvent::Move {
       position,
       pressed_buttons,
@@ -83,10 +93,22 @@ pub fn handle_mouse_move(
       window_below_cursor,
       ..
     } => {
-      // If a modifier-drag is active, move the dragged window with the
-      // cursor regardless of focus-follows-cursor.
+      // If a modifier-drag is active, move or resize the dragged window
+      // with the cursor regardless of focus-follows-cursor.
       if state.drag_move.is_some() {
         handle_drag_move(position, state, config)?;
+        return Ok(());
+      }
+
+      if state.drag_resize.is_some() {
+        // Guard against a missed button-up event (e.g. when the release
+        // happens while another process holds mouse capture).
+        if pressed_buttons.contains(&MouseButton::Right) {
+          handle_resize_move(position, state)?;
+        } else {
+          state.drag_resize = None;
+        }
+
         return Ok(());
       }
 
@@ -122,6 +144,13 @@ pub fn handle_mouse_move(
       if state.drag_move.is_some() && *button == MouseButton::Left =>
     {
       handle_drag_end(state, config)?;
+    }
+    MouseEvent::ButtonUp { button, .. }
+      if state.drag_resize.is_some() && *button == MouseButton::Right =>
+    {
+      // The window is resized incrementally on each move event, so there
+      // is nothing left to apply on release.
+      state.drag_resize = None;
     }
     _ => {}
   }
@@ -289,6 +318,153 @@ fn handle_drag_end(
   Ok(())
 }
 
+/// Starts a modifier-drag resize (Win+right-drag) on the window under the
+/// cursor.
+///
+/// The quadrant of the window that was grabbed determines which edges
+/// follow the cursor, so that the window always grows in the direction it
+/// is dragged.
+fn handle_resize_start(
+  position: &Point,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  // Only trigger on Windows, and only when the Win (super) key is held.
+  #[cfg(not(target_os = "windows"))]
+  {
+    let _ = (position, state);
+    return Ok(());
+  }
+  #[cfg(target_os = "windows")]
+  {
+    if !state.dispatcher.is_key_down(Key::Win) {
+      return Ok(());
+    }
+
+    // Find the window under the cursor.
+    let Some(window) = state
+      .dispatcher
+      .window_from_point(position)?
+      .and_then(|native| state.window_from_native(&native))
+    else {
+      return Ok(());
+    };
+
+    // Only tiling and floating windows have a resizable size.
+    if !matches!(
+      window.state(),
+      WindowState::Tiling | WindowState::Floating(_)
+    ) {
+      return Ok(());
+    }
+
+    // Focus the window being resized, matching the focus behavior of a
+    // regular click on it (the click itself is swallowed by the mouse
+    // hook).
+    let focused_container =
+      state.focused_container().context("No focused container.")?;
+
+    if focused_container.id() != window.id() {
+      set_focused_descendant(&window.as_container(), None);
+      state.pending_sync.queue_focus_change();
+    }
+
+    let initial_rect = window.to_rect()?;
+
+    state.drag_resize = Some(DragResize {
+      window_id: window.id(),
+      initial_position: position.clone(),
+      edges: ResizeEdges::from_grab_point(&initial_rect, position),
+      initial_rect,
+    });
+
+    Ok(())
+  }
+}
+
+/// Resizes the actively-dragged window to match the cursor's offset from
+/// where the drag started.
+///
+/// The size is always derived from the rect at the start of the drag, so
+/// that clamping (e.g. at a minimum size) doesn't cause the window to
+/// drift away from the cursor.
+fn handle_resize_move(
+  position: &Point,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  let drag_resize = state
+    .drag_resize
+    .as_ref()
+    .context("No active resize.")?
+    .clone();
+
+  let Some(window) = state.window_by_id(drag_resize.window_id) else {
+    state.drag_resize = None;
+    return Ok(());
+  };
+
+  let (width_delta, height_delta) = drag_resize.edges.size_delta(
+    position.x - drag_resize.initial_position.x,
+    position.y - drag_resize.initial_position.y,
+  );
+
+  let target_width = drag_resize.initial_rect.width() + width_delta;
+  let target_height = drag_resize.initial_rect.height() + height_delta;
+
+  match &window {
+    WindowContainer::NonTilingWindow(floating_window)
+      if matches!(floating_window.state(), WindowState::Floating(_)) =>
+    {
+      // Floating windows are repositioned as well as resized, so that the
+      // edges opposite the drag stay anchored.
+      let rect = anchored_rect(
+        &drag_resize.initial_rect,
+        drag_resize.edges,
+        target_width.max(MIN_FLOATING_WIDTH),
+        target_height.max(MIN_FLOATING_HEIGHT),
+      );
+
+      floating_window.set_floating_placement(rect);
+      state
+        .pending_sync
+        .queue_container_to_redraw(floating_window.clone());
+    }
+    _ => {
+      set_window_size(
+        window,
+        Some(LengthValue::from_px(target_width)),
+        Some(LengthValue::from_px(target_height)),
+        state,
+      )?;
+    }
+  }
+
+  Ok(())
+}
+
+/// Resizes a rect to the given size, keeping the edges opposite the ones
+/// being dragged in place.
+#[must_use]
+fn anchored_rect(
+  rect: &Rect,
+  edges: ResizeEdges,
+  width: i32,
+  height: i32,
+) -> Rect {
+  let x = if edges.is_right {
+    rect.left
+  } else {
+    rect.right - width
+  };
+
+  let y = if edges.is_bottom {
+    rect.top
+  } else {
+    rect.bottom - height
+  };
+
+  Rect::from_xy(x, y, width, height)
+}
+
 /// Focuses the window (or monitor) under the cursor when
 /// `focus_follows_cursor` is enabled.
 ///
@@ -367,6 +543,76 @@ fn clamp_rect_to_area(rect: &Rect, area: &Rect) -> Rect {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn resize_edges_from_grab_point() {
+    let rect = Rect::from_xy(100, 100, 400, 200);
+
+    // Top-left quadrant.
+    let edges = ResizeEdges::from_grab_point(&rect, &Point { x: 150, y: 150 });
+    assert!(!edges.is_right);
+    assert!(!edges.is_bottom);
+
+    // Bottom-right quadrant.
+    let edges = ResizeEdges::from_grab_point(&rect, &Point { x: 450, y: 250 });
+    assert!(edges.is_right);
+    assert!(edges.is_bottom);
+
+    // Top-right quadrant.
+    let edges = ResizeEdges::from_grab_point(&rect, &Point { x: 450, y: 150 });
+    assert!(edges.is_right);
+    assert!(!edges.is_bottom);
+  }
+
+  #[test]
+  fn size_delta_follows_grabbed_edges() {
+    let bottom_right = ResizeEdges {
+      is_right: true,
+      is_bottom: true,
+    };
+
+    // Dragging away from the top-left grows the window.
+    assert_eq!(bottom_right.size_delta(30, 20), (30, 20));
+
+    let top_left = ResizeEdges {
+      is_right: false,
+      is_bottom: false,
+    };
+
+    // Dragging away from the bottom-right grows the window.
+    assert_eq!(top_left.size_delta(-30, -20), (30, 20));
+  }
+
+  #[test]
+  fn anchors_rect_to_opposite_edges() {
+    let rect = Rect::from_xy(100, 100, 400, 200);
+
+    // Dragging the bottom-right edges keeps the top-left in place.
+    let resized = anchored_rect(
+      &rect,
+      ResizeEdges {
+        is_right: true,
+        is_bottom: true,
+      },
+      500,
+      300,
+    );
+    assert_eq!(resized, Rect::from_xy(100, 100, 500, 300));
+
+    // Dragging the top-left edges keeps the bottom-right in place.
+    let resized = anchored_rect(
+      &rect,
+      ResizeEdges {
+        is_right: false,
+        is_bottom: false,
+      },
+      500,
+      300,
+    );
+    assert_eq!(resized, Rect::from_xy(0, 0, 500, 300));
+    assert_eq!(resized.right, rect.right);
+    assert_eq!(resized.bottom, rect.bottom);
+  }
 
   #[test]
   fn clamps_rect_within_area() {

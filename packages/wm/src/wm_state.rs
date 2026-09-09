@@ -73,6 +73,12 @@ pub struct WmState {
   /// up drops it back into the tiling layout at the cursor's workspace.
   pub drag_move: Option<DragMove>,
 
+  /// Active modifier-drag (e.g. Win+right-drag) resizing a window, if any.
+  ///
+  /// While set, mouse-move events resize the window and a right-button up
+  /// ends the drag.
+  pub drag_resize: Option<DragResize>,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
@@ -95,6 +101,58 @@ pub struct DragMove {
   pub grab_offset: Point,
 }
 
+/// A modifier-drag (e.g. holding Win and right-dragging) that is
+/// currently resizing a window.
+#[derive(Clone, Debug)]
+pub struct DragResize {
+  /// ID of the window currently being resized.
+  pub window_id: Uuid,
+
+  /// Cursor position at the moment the drag started.
+  pub initial_position: Point,
+
+  /// Rect of the window at the moment the drag started.
+  pub initial_rect: Rect,
+
+  /// Edges of the window that follow the cursor.
+  pub edges: ResizeEdges,
+}
+
+/// The edges of a window that a resize drag moves.
+///
+/// Determined by the quadrant of the window that was grabbed, so that the
+/// window grows in the direction the cursor is dragged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResizeEdges {
+  /// Whether the right (rather than the left) edge follows the cursor.
+  pub is_right: bool,
+
+  /// Whether the bottom (rather than the top) edge follows the cursor.
+  pub is_bottom: bool,
+}
+
+impl ResizeEdges {
+  /// Gets the edges to resize from, based on where within `rect` the
+  /// cursor grabbed the window.
+  #[must_use]
+  pub fn from_grab_point(rect: &Rect, position: &Point) -> Self {
+    Self {
+      is_right: position.x >= rect.left + rect.width() / 2,
+      is_bottom: position.y >= rect.top + rect.height() / 2,
+    }
+  }
+
+  /// Converts a cursor delta into the resulting change in the window's
+  /// width and height.
+  #[must_use]
+  pub fn size_delta(self, delta_x: i32, delta_y: i32) -> (i32, i32) {
+    (
+      if self.is_right { delta_x } else { -delta_x },
+      if self.is_bottom { delta_y } else { -delta_y },
+    )
+  }
+}
+
 impl WmState {
   pub fn new(
     dispatcher: Dispatcher,
@@ -113,6 +171,7 @@ impl WmState {
       is_paused: false,
       is_focus_synced: false,
       drag_move: None,
+      drag_resize: None,
       has_initialized: false,
       event_tx,
       exit_tx,

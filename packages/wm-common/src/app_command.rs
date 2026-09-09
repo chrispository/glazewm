@@ -222,6 +222,14 @@ pub enum InvokeCommand {
   },
   // Reuse `InvokeResizeCommand` struct.
   Size(InvokeResizeCommand),
+  /// Swaps the window with the adjacent window in the given direction.
+  ///
+  /// Unlike `move`, the two windows trade places without changing the
+  /// layout, and the swap never crosses into another workspace.
+  Swap {
+    #[clap(long)]
+    direction: Direction,
+  },
   ToggleFloating {
     #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
     shown_on_top: Option<bool>,

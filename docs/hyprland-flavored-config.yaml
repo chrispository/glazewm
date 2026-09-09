@@ -100,11 +100,20 @@ bind = SUPER, L, movefocus, r
 bind = SUPER, K, movefocus, u
 bind = SUPER, I, movefocus, d
 
-# Swap/move windows.
+# Move windows. `movewindow` re-parents the window, so it can change the
+# layout and can push the window onto an adjacent workspace.
 bind = SUPER SHIFT, H, movewindow, l
 bind = SUPER SHIFT, L, movewindow, r
 bind = SUPER SHIFT, K, movewindow, u
 bind = SUPER SHIFT, J, movewindow, d
+
+# Swap windows. `swapwindow` trades places with the neighbouring window
+# instead: each window takes over the other's slot, so the layout and
+# the split sizes stay exactly as they are. It stops at the edge of the
+# workspace rather than moving the window off it. `u` and `d` swap
+# vertically.
+bind = SUPER SHIFT, left, swapwindow, l
+bind = SUPER SHIFT, right, swapwindow, r
 
 # Dwindle split control: SUPER+J toggles the split axis (vertical
 # <-> horizontal).

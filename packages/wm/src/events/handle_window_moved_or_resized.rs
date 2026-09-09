@@ -43,6 +43,17 @@ pub fn handle_window_moved_or_resized(
       properties.frame = frame_position.clone();
     });
 
+    // Modifier-resize updates are initiated by the WM and therefore
+    // generate location-change notifications for the same window. The
+    // native frame cache still needs to reflect the actual frame, but the
+    // rest of this handler would treat the notification as an external
+    // resize and redo work on every affected window.
+    #[cfg(target_os = "windows")]
+    if is_modifier_resize_feedback(window.id(), state.drag_resize.as_ref())
+    {
+      return Ok(());
+    }
+
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {
       let is_drag_end = {
@@ -357,6 +368,15 @@ pub fn handle_window_moved_or_resized(
   Ok(())
 }
 
+/// Returns whether a moved/resized notification belongs to the currently
+/// active modifier-resize operation.
+fn is_modifier_resize_feedback(
+  window_id: uuid::Uuid,
+  drag_resize: Option<&crate::wm_state::DragResize>,
+) -> bool {
+  drag_resize.is_some_and(|drag_resize| drag_resize.window_id == window_id)
+}
+
 // TODO: Move to shared location. `handle_window_moved_or_resized_end.rs`
 // also uses this.
 pub fn update_floating_window_position(
@@ -541,9 +561,10 @@ fn is_in_corner(window_frame: &Rect, monitor_rect: &Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use wm_platform::Rect;
+  use wm_platform::{Point, Rect};
 
-  use super::is_in_corner;
+  use super::{is_in_corner, is_modifier_resize_feedback};
+  use crate::wm_state::{DragResize, ResizeEdges};
 
   #[test]
   fn matches_corner_positions() {
@@ -562,5 +583,26 @@ mod tests {
     let frame = Rect::from_xy(100, 100, 800, 600);
 
     assert!(!is_in_corner(&frame, &monitor));
+  }
+
+  #[test]
+  fn matches_the_window_in_an_active_modifier_resize() {
+    let window_id = uuid::Uuid::new_v4();
+    let drag_resize = DragResize {
+      window_id,
+      initial_position: Point { x: 100, y: 100 },
+      initial_rect: Rect::from_xy(0, 0, 400, 300),
+      edges: ResizeEdges {
+        is_right: true,
+        is_bottom: true,
+      },
+    };
+
+    assert!(is_modifier_resize_feedback(window_id, Some(&drag_resize),));
+    assert!(!is_modifier_resize_feedback(
+      uuid::Uuid::new_v4(),
+      Some(&drag_resize),
+    ));
+    assert!(!is_modifier_resize_feedback(window_id, None));
   }
 }

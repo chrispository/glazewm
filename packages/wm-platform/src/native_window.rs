@@ -435,6 +435,76 @@ pub struct NativeWindow {
   pub(crate) inner: platform_impl::NativeWindow,
 }
 
+/// A single operation in a Windows deferred window-position batch.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug)]
+pub struct WindowPosUpdate {
+  pub window: NativeWindow,
+  pub rect: Rect,
+  pub z_order: WindowZOrder,
+  pub flags: SET_WINDOW_POS_FLAGS,
+}
+
+/// Applies several Windows window-position updates as one deferred batch.
+///
+/// The native deferred-position handle and HWND details remain inside
+/// `wm-platform`; callers only provide the windows, target rectangles,
+/// z-order values, and `SetWindowPos` flags.
+#[cfg(target_os = "windows")]
+pub fn set_window_pos_batch(
+  updates: &[WindowPosUpdate],
+) -> crate::Result<()> {
+  if updates.is_empty() {
+    return Ok(());
+  }
+
+  let mut batch = platform_impl::WindowPosBatch::new(updates.len())?;
+
+  for update in updates {
+    batch.defer_window_pos(
+      update.window.inner.hwnd(),
+      &update.z_order,
+      &update.rect,
+      update.flags,
+    )?;
+  }
+
+  batch.commit()
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+  use windows::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE;
+
+  use super::*;
+  use crate::NativeWindowWindowsExt;
+
+  #[test]
+  fn window_position_updates_preserve_their_input_order() {
+    let updates = [
+      WindowPosUpdate {
+        window: NativeWindow::from_handle(101),
+        rect: Rect::from_xy(0, 0, 400, 300),
+        z_order: WindowZOrder::Normal,
+        flags: SWP_NOACTIVATE,
+      },
+      WindowPosUpdate {
+        window: NativeWindow::from_handle(202),
+        rect: Rect::from_xy(400, 0, 400, 300),
+        z_order: WindowZOrder::Normal,
+        flags: SWP_NOACTIVATE,
+      },
+    ];
+
+    let window_ids = updates
+      .iter()
+      .map(|update| update.window.id())
+      .collect::<Vec<_>>();
+
+    assert_eq!(window_ids, vec![WindowId(101), WindowId(202)]);
+  }
+}
+
 impl NativeWindow {
   /// Gets the unique identifier for this window.
   #[must_use]

@@ -29,6 +29,8 @@ use crate::{
   Dispatcher, DispatcherExtWindows, Point,
 };
 
+const MOUSE_MOVE_INTERVAL: Duration = Duration::from_millis(16);
+
 /// Data shared with the window procedure callback.
 struct CallbackData {
   event_tx: mpsc::UnboundedSender<MouseEvent>,
@@ -217,17 +219,14 @@ impl MouseListener {
       return Ok(());
     }
 
-    // Throttle mouse move events so that there's a minimum of 50ms between
+    // Throttle mouse move events so that there's a minimum of 16ms between
     // each emission. State change events (button down/up) always get
     // emitted.
-    let should_emit = match event_kind {
-      MouseEventKind::Move => {
-        callback_data.last_move_emission.is_none_or(|timestamp| {
-          timestamp.elapsed() >= Duration::from_millis(50)
-        })
-      }
-      _ => true,
-    };
+    let should_emit = should_emit_mouse_event(
+      event_kind,
+      callback_data.last_move_emission,
+      Instant::now(),
+    );
 
     if !should_emit {
       return Ok(());
@@ -317,10 +316,91 @@ impl MouseListener {
   }
 }
 
+/// Determines whether a mouse event should be emitted.
+///
+/// Mouse moves are throttled to a roughly 60 Hz cadence, while button
+/// transitions are always delivered immediately.
+fn should_emit_mouse_event(
+  event_kind: MouseEventKind,
+  last_move_emission: Option<Instant>,
+  now: Instant,
+) -> bool {
+  match event_kind {
+    MouseEventKind::Move => last_move_emission.is_none_or(|timestamp| {
+      now.duration_since(timestamp) >= MOUSE_MOVE_INTERVAL
+    }),
+    _ => true,
+  }
+}
+
 impl Drop for MouseListener {
   fn drop(&mut self) {
     if let Err(err) = self.terminate() {
       tracing::warn!("Failed to terminate mouse listener: {}", err);
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn emits_the_first_move() {
+    let now = Instant::now();
+
+    assert!(should_emit_mouse_event(MouseEventKind::Move, None, now));
+  }
+
+  #[test]
+  fn suppresses_a_move_before_the_interval() {
+    let now = Instant::now();
+    let last_move_emission = now
+      .checked_sub(Duration::from_millis(15))
+      .expect("test timestamp should be representable");
+
+    assert!(!should_emit_mouse_event(
+      MouseEventKind::Move,
+      Some(last_move_emission),
+      now,
+    ));
+  }
+
+  #[test]
+  fn emits_a_move_at_or_after_the_interval() {
+    let now = Instant::now();
+
+    assert!(should_emit_mouse_event(
+      MouseEventKind::Move,
+      Some(
+        now
+          .checked_sub(MOUSE_MOVE_INTERVAL)
+          .expect("test timestamp should be representable"),
+      ),
+      now,
+    ));
+    assert!(should_emit_mouse_event(
+      MouseEventKind::Move,
+      Some(
+        now
+          .checked_sub(Duration::from_millis(17))
+          .expect("test timestamp should be representable"),
+      ),
+      now,
+    ));
+  }
+
+  #[test]
+  fn always_emits_button_transitions() {
+    let now = Instant::now();
+
+    for event_kind in [
+      MouseEventKind::LeftButtonDown,
+      MouseEventKind::LeftButtonUp,
+      MouseEventKind::RightButtonDown,
+      MouseEventKind::RightButtonUp,
+    ] {
+      assert!(should_emit_mouse_event(event_kind, Some(now), now,));
     }
   }
 }

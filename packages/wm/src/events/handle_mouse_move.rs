@@ -145,12 +145,15 @@ pub fn handle_mouse_move(
     {
       handle_drag_end(state, config)?;
     }
-    MouseEvent::ButtonUp { button, .. }
-      if state.drag_resize.is_some() && *button == MouseButton::Right =>
-    {
-      // The window is resized incrementally on each move event, so there
-      // is nothing left to apply on release.
+    MouseEvent::ButtonUp {
+      button, position, ..
+    } if state.drag_resize.is_some() && *button == MouseButton::Right => {
+      // Apply the release position in case the last move was throttled.
+      // Clear the state even when the final resize fails so a stale drag
+      // cannot continue processing subsequent events.
+      let resize_result = handle_resize_move(position, state);
       state.drag_resize = None;
+      resize_result?;
     }
     _ => {}
   }

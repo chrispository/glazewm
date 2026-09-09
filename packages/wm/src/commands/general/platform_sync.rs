@@ -8,7 +8,11 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
-use wm_platform::{CornerStyle, OpacityValue};
+use wm_platform::{
+  set_window_pos_batch, CornerStyle, OpacityValue, WindowPosUpdate,
+  SET_WINDOW_POS_FLAGS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+  SWP_NOSENDCHANGING,
+};
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
@@ -169,6 +173,108 @@ fn windows_to_bring_to_front(
   Ok(windows_to_bring_to_front)
 }
 
+#[cfg(target_os = "windows")]
+fn batch_window_pos_flags() -> SET_WINDOW_POS_FLAGS {
+  SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_NOSENDCHANGING | SWP_FRAMECHANGED
+}
+
+#[cfg(target_os = "windows")]
+struct PlannedWindowUpdate {
+  window: WindowContainer,
+  rect: Rect,
+  z_order: WindowZOrder,
+  is_visible: bool,
+}
+
+#[cfg(target_os = "windows")]
+#[allow(clippy::struct_excessive_bools)]
+struct BatchWindowEligibility<'a> {
+  state: &'a WindowState,
+  is_visible: bool,
+  is_minimized: bool,
+  is_maximized: bool,
+  has_pending_dpi_adjustment: bool,
+  has_active_drag: bool,
+  hide_method: &'a HideMethod,
+}
+
+#[cfg(target_os = "windows")]
+fn should_batch_tiled_window(
+  eligibility: &BatchWindowEligibility<'_>,
+) -> bool {
+  matches!(eligibility.state, WindowState::Tiling)
+    && eligibility.is_visible
+    && !eligibility.is_minimized
+    && !eligibility.is_maximized
+    && !eligibility.has_pending_dpi_adjustment
+    && !eligibility.has_active_drag
+    && eligibility.hide_method != &HideMethod::PlaceInCorner
+}
+
+#[cfg(target_os = "windows")]
+fn plan_tiled_window_update(
+  window: &WindowContainer,
+  z_order: &WindowZOrder,
+  is_visible: bool,
+  hide_method: &HideMethod,
+) -> anyhow::Result<Option<PlannedWindowUpdate>> {
+  let state = window.state();
+
+  if !matches!(state, WindowState::Tiling)
+    || !is_visible
+    || window.has_pending_dpi_adjustment()
+    || window.active_drag().is_some()
+    || hide_method == &HideMethod::PlaceInCorner
+  {
+    return Ok(None);
+  }
+
+  let native = window.native().clone();
+  let is_minimized = native.is_minimized()?;
+  let is_maximized = native.is_maximized()?;
+
+  if !should_batch_tiled_window(&BatchWindowEligibility {
+    state: &state,
+    is_visible,
+    is_minimized,
+    is_maximized,
+    has_pending_dpi_adjustment: window.has_pending_dpi_adjustment(),
+    has_active_drag: window.active_drag().is_some(),
+    hide_method,
+  }) {
+    return Ok(None);
+  }
+
+  let rect = window
+    .to_rect()?
+    .apply_delta(&window.total_border_delta()?, None);
+
+  Ok(Some(PlannedWindowUpdate {
+    window: window.clone(),
+    rect,
+    z_order: z_order.clone(),
+    is_visible,
+  }))
+}
+
+#[cfg(target_os = "windows")]
+fn apply_window_pos_batch(
+  updates: &[PlannedWindowUpdate],
+) -> anyhow::Result<()> {
+  let updates = updates
+    .iter()
+    .map(|update| WindowPosUpdate {
+      window: update.window.native().clone(),
+      rect: update.rect.clone(),
+      z_order: update.z_order.clone(),
+      flags: batch_window_pos_flags(),
+    })
+    .collect::<Vec<_>>();
+
+  set_window_pos_batch(&updates)?;
+  Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 fn redraw_containers(
   focused_container: &Container,
@@ -206,6 +312,9 @@ fn redraw_containers(
 
   // Get monitors by their optimal hide corner.
   let monitors_by_hide_corner = state.monitors_by_hide_corner();
+
+  #[cfg(target_os = "windows")]
+  let mut batched_updates = Vec::new();
 
   for window in windows_to_update.iter().rev() {
     let should_bring_to_front = windows_to_bring_to_front.contains(window);
@@ -286,50 +395,56 @@ fn redraw_containers(
       DisplayState::Showing | DisplayState::Shown
     );
 
+    #[cfg(target_os = "windows")]
+    {
+      if let Ok(Some(update)) = plan_tiled_window_update(
+        window,
+        &z_order,
+        is_visible,
+        &config.value.general.hide_method,
+      ) {
+        batched_updates.push(update);
+      } else {
+        if let Err(err) = reposition_window(
+          window,
+          *hide_corner,
+          &z_order,
+          is_visible,
+          config,
+        ) {
+          tracing::warn!("Failed to set window position: {}", err);
+        }
+
+        finish_repositioned_window(window, is_visible, config);
+      }
+    }
+
+    #[cfg(not(target_os = "windows"))]
     if let Err(err) =
       reposition_window(window, *hide_corner, &z_order, is_visible, config)
     {
       tracing::warn!("Failed to set window position: {}", err);
     }
+  }
 
-    // Whether the window is either transitioning to or from fullscreen.
-    // TODO: This check can be improved since `prev_state` can be
-    // fullscreen without it needing to be marked as not fullscreen.
-    #[cfg(target_os = "windows")]
-    {
-      let is_transitioning_fullscreen =
-        match (window.prev_state(), window.state()) {
-          (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
-          (Some(WindowState::Fullscreen(_)), _) => true,
-          _ => false,
-        };
-
-      if is_transitioning_fullscreen {
-        if let Err(err) = window.native().mark_fullscreen(matches!(
-          window.state(),
-          WindowState::Fullscreen(_)
-        )) {
-          tracing::warn!("Failed to mark window as fullscreen: {}", err);
-        }
-      }
+  #[cfg(target_os = "windows")]
+  if !batched_updates.is_empty() {
+    if let Err(err) = apply_window_pos_batch(&batched_updates) {
+      tracing::warn!("Failed to batch window positions: {}", err);
     }
 
-    // Skip setting taskbar visibility if the window is hidden (has no
-    // effect). Since cloaked windows are normally always visible in the
-    // taskbar, we only need to set visibility if `show_all_in_taskbar` is
-    // `false`.
-    #[cfg(target_os = "windows")]
-    if config.value.general.hide_method == HideMethod::Cloak
-      && !config.value.general.show_all_in_taskbar
-      && matches!(
-        window.display_state(),
-        DisplayState::Showing | DisplayState::Hiding
-      )
-    {
-      if let Err(err) = window.native().set_taskbar_visibility(is_visible)
+    for update in batched_updates {
+      if let Err(err) =
+        set_window_visibility(&update.window, update.is_visible, config)
       {
-        tracing::warn!("Failed to set taskbar visibility: {}", err);
+        tracing::warn!("Failed to set window visibility: {}", err);
       }
+
+      finish_repositioned_window(
+        &update.window,
+        update.is_visible,
+        config,
+      );
     }
   }
 
@@ -458,18 +573,70 @@ fn reposition_window(
         }
       }
 
-      // Set visibility based on the hide method.
-      if config.value.general.hide_method == HideMethod::Cloak {
-        window.native().set_cloaked(!is_visible)?;
-      } else if is_visible {
-        window.native().show()?;
-      } else {
-        window.native().hide()?;
-      }
+      set_window_visibility(window, is_visible, config)?;
     }
   }
 
   Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn set_window_visibility(
+  window: &WindowContainer,
+  is_visible: bool,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  if config.value.general.hide_method == HideMethod::Cloak {
+    window.native().set_cloaked(!is_visible)?;
+  } else if is_visible {
+    window.native().show()?;
+  } else {
+    window.native().hide()?;
+  }
+
+  Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn finish_repositioned_window(
+  window: &WindowContainer,
+  is_visible: bool,
+  config: &UserConfig,
+) {
+  // Whether the window is either transitioning to or from fullscreen.
+  // TODO: This check can be improved since `prev_state` can be
+  // fullscreen without it needing to be marked as not fullscreen.
+  let is_transitioning_fullscreen =
+    match (window.prev_state(), window.state()) {
+      (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
+      (Some(WindowState::Fullscreen(_)), _) => true,
+      _ => false,
+    };
+
+  if is_transitioning_fullscreen {
+    if let Err(err) = window.native().mark_fullscreen(matches!(
+      window.state(),
+      WindowState::Fullscreen(_)
+    )) {
+      tracing::warn!("Failed to mark window as fullscreen: {}", err);
+    }
+  }
+
+  // Skip setting taskbar visibility if the window is hidden (has no
+  // effect). Since cloaked windows are normally always visible in the
+  // taskbar, we only need to set visibility if `show_all_in_taskbar` is
+  // `false`.
+  if config.value.general.hide_method == HideMethod::Cloak
+    && !config.value.general.show_all_in_taskbar
+    && matches!(
+      window.display_state(),
+      DisplayState::Showing | DisplayState::Hiding
+    )
+  {
+    if let Err(err) = window.native().set_taskbar_visibility(is_visible) {
+      tracing::warn!("Failed to set taskbar visibility: {}", err);
+    }
+  }
 }
 
 fn jump_cursor(
@@ -617,4 +784,50 @@ fn apply_transparency_effect(
   };
 
   _ = window.native().set_transparency(transparency);
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+  use wm_common::{HideMethod, WindowState};
+
+  use super::{should_batch_tiled_window, BatchWindowEligibility};
+
+  #[test]
+  fn batches_only_visible_tiling_windows_without_exceptions() {
+    let place_in_corner = HideMethod::PlaceInCorner;
+    let mut eligibility = BatchWindowEligibility {
+      state: &WindowState::Tiling,
+      is_visible: true,
+      is_minimized: false,
+      is_maximized: false,
+      has_pending_dpi_adjustment: false,
+      has_active_drag: false,
+      hide_method: &HideMethod::Cloak,
+    };
+
+    assert!(should_batch_tiled_window(&eligibility));
+
+    eligibility.is_visible = false;
+    assert!(!should_batch_tiled_window(&eligibility));
+    eligibility.is_visible = true;
+
+    eligibility.is_minimized = true;
+    assert!(!should_batch_tiled_window(&eligibility));
+    eligibility.is_minimized = false;
+
+    eligibility.is_maximized = true;
+    assert!(!should_batch_tiled_window(&eligibility));
+    eligibility.is_maximized = false;
+
+    eligibility.has_pending_dpi_adjustment = true;
+    assert!(!should_batch_tiled_window(&eligibility));
+    eligibility.has_pending_dpi_adjustment = false;
+
+    eligibility.has_active_drag = true;
+    assert!(!should_batch_tiled_window(&eligibility));
+    eligibility.has_active_drag = false;
+
+    eligibility.hide_method = &place_in_corner;
+    assert!(!should_batch_tiled_window(&eligibility));
+  }
 }

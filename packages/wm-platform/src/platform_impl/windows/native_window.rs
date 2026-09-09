@@ -21,6 +21,7 @@ use windows::{
         SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT,
       },
       WindowsAndMessaging::{
+        BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos,
         EnumWindows, GetAncestor, GetClassNameW, GetDesktopWindow,
         GetForegroundWindow, GetLayeredWindowAttributes, GetShellWindow,
         GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
@@ -56,6 +57,77 @@ pub(crate) const FOREGROUND_INPUT_IDENTIFIER: u32 = 6379;
 #[derive(Clone, Debug)]
 pub(crate) struct NativeWindow {
   pub(crate) handle: isize,
+}
+
+/// A native deferred window-position transaction.
+pub(crate) struct WindowPosBatch {
+  handle: Option<windows::Win32::UI::WindowsAndMessaging::HDWP>,
+}
+
+impl WindowPosBatch {
+  pub(crate) fn new(window_count: usize) -> crate::Result<Self> {
+    let window_count = i32::try_from(window_count)?;
+    let handle = unsafe { BeginDeferWindowPos(window_count) }?;
+
+    Ok(Self {
+      handle: Some(handle),
+    })
+  }
+
+  pub(crate) fn defer_window_pos(
+    &mut self,
+    hwnd: HWND,
+    z_order: &WindowZOrder,
+    rect: &Rect,
+    flags: SET_WINDOW_POS_FLAGS,
+  ) -> crate::Result<()> {
+    let handle = self.handle.take().ok_or_else(|| {
+      crate::Error::Platform(
+        "Cannot append to an invalid window-position batch.".to_string(),
+      )
+    })?;
+
+    let next_handle = unsafe {
+      DeferWindowPos(
+        handle,
+        hwnd,
+        z_order_hwnd(z_order),
+        rect.x(),
+        rect.y(),
+        rect.width(),
+        rect.height(),
+        flags,
+      )
+    };
+
+    match next_handle {
+      Ok(next_handle) => {
+        self.handle = Some(next_handle);
+        Ok(())
+      }
+      Err(error) => Err(error.into()),
+    }
+  }
+
+  pub(crate) fn commit(mut self) -> crate::Result<()> {
+    let handle = self.handle.take().ok_or_else(|| {
+      crate::Error::Platform(
+        "Cannot commit an invalid window-position batch.".to_string(),
+      )
+    })?;
+
+    unsafe { EndDeferWindowPos(handle) }?;
+    Ok(())
+  }
+}
+
+fn z_order_hwnd(z_order: &WindowZOrder) -> HWND {
+  match z_order {
+    WindowZOrder::TopMost => HWND_TOPMOST,
+    WindowZOrder::Top => HWND_TOP,
+    WindowZOrder::Normal => HWND_NOTOPMOST,
+    WindowZOrder::AfterWindow(window_id) => HWND(window_id.0),
+  }
 }
 
 impl NativeWindow {
@@ -397,17 +469,10 @@ impl NativeWindow {
     rect: &Rect,
     flags: SET_WINDOW_POS_FLAGS,
   ) -> crate::Result<()> {
-    let z_order_hwnd = match z_order {
-      WindowZOrder::TopMost => HWND_TOPMOST,
-      WindowZOrder::Top => HWND_TOP,
-      WindowZOrder::Normal => HWND_NOTOPMOST,
-      WindowZOrder::AfterWindow(window_id) => HWND(window_id.0),
-    };
-
     unsafe {
       SetWindowPos(
         self.hwnd(),
-        z_order_hwnd,
+        z_order_hwnd(z_order),
         rect.x(),
         rect.y(),
         rect.width(),
@@ -546,19 +611,14 @@ impl NativeWindow {
     &self,
     z_order: &WindowZOrder,
   ) -> crate::Result<()> {
-    let z_order_hwnd = match z_order {
-      WindowZOrder::TopMost => HWND_TOPMOST,
-      WindowZOrder::Top => HWND_TOP,
-      WindowZOrder::Normal => HWND_NOTOPMOST,
-      WindowZOrder::AfterWindow(window_id) => HWND(window_id.0),
-    };
-
     let flags = SWP_NOACTIVATE
       | SWP_NOCOPYBITS
       | SWP_ASYNCWINDOWPOS
       | SWP_SHOWWINDOW
       | SWP_NOMOVE
       | SWP_NOSIZE;
+
+    let z_order_hwnd = z_order_hwnd(z_order);
 
     unsafe { SetWindowPos(self.hwnd(), z_order_hwnd, 0, 0, 0, 0, flags) }?;
 
